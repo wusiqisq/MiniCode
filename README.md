@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-已实现第一阶段：可安装的最小终端程序和对应自动化测试。支持普通输入、跳过空白，以及通过 `/exit`、EOF 或 Ctrl+C 退出。
+已实现第二阶段：在终端通过 DeepSeek API 进行单次问答。支持跳过空白，以及通过 `/exit`、EOF 或 Ctrl+C 退出（包括等待模型时中断）。
 
-普通输入目前只会显示“已收到输入，模型功能尚未接入。”，随后继续等待输入。模型 API、会话历史、Agent Loop 和文件、命令工具尚未实现。
+每次仅发送当前问题，不保留对话历史。Agent Loop、文件和命令工具尚未实现。当前实现已通过离线模拟测试，尚未使用真实密钥进行 API 验证。
 
 ## 安装与运行
 
@@ -20,12 +20,51 @@
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
+```
+
+`-e` 表示以可编辑方式安装，修改 `src/minicode/` 后即可使用新代码；`[dev]` 会同时安装测试依赖 pytest。运行依赖为 HTTPX（同步 HTTP 请求）和 python-dotenv（读取 `.env`）。已有虚拟环境时，激活后重新执行安装命令即可更新依赖。
+
+### 配置 DeepSeek
+
+如果还没有 `.env`，先在项目根目录复制模板（`-n` 避免覆盖已有文件）：
+
+```bash
+cp -n .env.example .env
+```
+
+用编辑器打开 `.env`，自行填写密钥：
+
+```dotenv
+DEEPSEEK_API_KEY=填写你自己的DeepSeek密钥
+DEEPSEEK_MODEL=deepseek-flash
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_TIMEOUT=60
+```
+
+程序只读取**启动时当前工作目录**的 `.env`，不会搜索父目录；已有同名环境变量优先于 `.env`（包括空值）。`.env` 已被 Git 忽略，模板 `.env.example` 可以提交；不要将真实密钥写入模板或发到聊天中。修改 `.env` 后，下一次提问会重新读取配置。
+
+默认模型和接口依据 [DeepSeek 官方快速开始](https://api-docs.deepseek.com/) 与 [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)。请求使用非流式模式、关闭思考模式，最大输出为 1024 tokens。模型名称可在 `.env` 修改，不在程序中限制可选名称。
+
+`DEEPSEEK_TIMEOUT` 必须是大于 0 的有限秒数，控制连接、读取等 HTTP 网络操作的超时，**不是整次请求的总时限**。基础地址要求 HTTPS，不包含凭据、查询参数或片段；通常保留模板值即可。
+
+在项目根目录启动：
+
+```bash
 python -m minicode
 ```
 
-`-e` 表示以可编辑方式安装，修改 `src/minicode/` 后即可使用新代码；`[dev]` 会同时安装测试依赖 pytest。程序本身没有第三方运行依赖，不需要模型密钥。
+普通输入会发送到配置的模型服务，并可能产生 API 费用。缺少密钥、网络错误、超时、认证失败、余额不足、限流或服务错误会显示简短提示，然后继续等待输入；不自动重试，不输出原始错误响应或密钥。响应格式异常、空回答或未完整结束也会明确报错。错误码说明见 [DeepSeek 官方文档](https://api-docs.deepseek.com/quick_start/error_codes/)。
 
 输入 `/exit` 退出，也可按 Ctrl+C 中断；Linux/macOS 下在空输入行按 Ctrl+D 可发送 EOF，表示输入结束。
+
+### 代理配置报错
+
+HTTPX 默认读取 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写形式。若提示不支持 `socks://`，错误发生在创建客户端时，请求尚未发送，不能据此判断 API 密钥是否有效。
+
+- 使用 SOCKS 代理：将对应环境变量中的 `socks://` 改为 `socks5://`，并在当前虚拟环境执行 `python -m pip install 'httpx[socks]'`。
+- 使用 HTTP 或混合代理端口：按代理软件的实际设置，将代理地址设为 `http://127.0.0.1:端口`。即使目标网站是 HTTPS，HTTP 代理地址通常仍以 `http://` 开头。
+
+不要只改协议而忽略端口支持的实际协议。程序会提示客户端配置或依赖错误并继续等待输入，不会自动替换或绕过代理。参见 [HTTPX 代理说明](https://www.python-httpx.org/advanced/proxies/) 与 [环境变量说明](https://www.python-httpx.org/environment_variables/)。
 
 ## 测试
 
@@ -35,14 +74,19 @@ python -m minicode
 python -m pytest
 ```
 
-测试使用模拟输入和本地子进程，不调用真实模型 API，不需要网络或密钥。首次安装依赖通常需要网络。
+测试使用模拟输入、HTTPX MockTransport 和本地子进程；隔离本地 `.env` 和相关环境变量，并禁止进程内真实 HTTP 请求，不需要网络或密钥。首次安装依赖通常需要网络。
+
+真实 API 验证由你填写密钥后单独进行：启动程序，输入一个简单问题，确认显示真实回答后输入 `/exit`。这一结果需与离线测试结果分开记录。
 
 ## 代码入口
 
 - `pyproject.toml`：包配置、Python 版本要求和测试依赖。
 - `src/minicode/__main__.py`：模块启动入口，调用 `cli.main()`。
 - `src/minicode/cli.py`：欢迎提示、输入循环和退出处理。
-- `tests/test_cli.py`：交互行为和已安装模块入口的测试。
+- `src/minicode/config.py`：读取并校验配置，配置对象的文本表示隐藏密钥。
+- `src/minicode/llm.py`：发送单次模型请求、校验回答、转换错误提示。
+- `.env.example`：不含密钥的配置模板。
+- `tests/`：配置、HTTP 请求响应、交互和模块入口的离线测试。
 
 ## 第一版目标
 

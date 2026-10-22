@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "一个用于学习 Coding Agent 架构的终端助手"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["httpx>=0.27,<1", "python-dotenv>=1,<2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
