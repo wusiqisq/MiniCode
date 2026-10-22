@@ -1,4 +1,4 @@
-"""用同步 HTTP 请求完成一次 DeepSeek 问答。"""
+"""将消息列表发送给 DeepSeek，返回本次回答。"""
 
 import httpx
 
@@ -10,9 +10,9 @@ class ModelError(Exception):
 
 
 def ask_model(
-    prompt: str, config: Config, *, transport: httpx.BaseTransport | None = None
+    messages: list[dict[str, str]], config: Config, *, transport: httpx.BaseTransport | None = None
 ) -> str:
-    """每次只发送当前问题；transport 用于离线测试替换网络。"""
+    """发送调用方提供的历史和当前问题；transport 用于离线测试替换网络。"""
     try:
         client = httpx.Client(timeout=config.timeout, transport=transport)
     except ValueError:
@@ -34,7 +34,7 @@ def ask_model(
                 headers={"Authorization": f"Bearer {config.api_key}"},
                 json={
                     "model": config.model,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "stream": False,
                     "thinking": {"type": "disabled"},
                     "max_tokens": 1024,
@@ -46,14 +46,14 @@ def ask_model(
         raise ModelError("无法连接模型服务，请检查网络和 DEEPSEEK_BASE_URL。") from None
 
     if not response.is_success:
-        messages = {
+        error_messages = {
             400: "请求格式错误，请检查模型名称和接口配置。",
             401: "身份验证失败，请检查 DEEPSEEK_API_KEY。",
             402: "DeepSeek 账户余额不足，请检查账户。",
             422: "请求参数无效，请检查模型名称和接口配置。",
             429: "请求受到限流，请稍后重试。",
         }
-        message = messages.get(response.status_code, "模型服务请求失败，请稍后重试。")
+        message = error_messages.get(response.status_code, "模型服务请求失败，请稍后重试。")
         raise ModelError(f"{message}（HTTP {response.status_code}）")
 
     try:
