@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-已实现第三阶段：在终端通过 DeepSeek API 进行进程内多轮对话。支持 `/clear` 清空历史、跳过空白，以及通过 `/exit`、EOF 或 Ctrl+C 退出（包括等待模型时中断）。
+已完成第四阶段的受限文件读取，以及第五阶段的工具注册与模型工具协议；终端仍通过 DeepSeek API 进行进程内多轮纯文本对话。支持 `/clear` 清空历史、跳过空白，以及通过 `/exit`、EOF 或 Ctrl+C 退出（包括等待模型时中断）。
 
-每次发送此前成功的问答和当前问题；只有模型成功返回完整回答，才将这一问一答加入历史。历史仅保存在本次运行的内存中，退出后不恢复。Agent Loop、文件和命令工具尚未实现。当前实现已通过离线模拟测试，助手未使用真实密钥进行 API 验证。
+每次发送此前成功的问答和当前问题；只有模型成功返回完整回答，才将这一问一答加入历史。历史仅保存在本次运行的内存中，退出后不恢复。文件工具及协议目前只供 Python 调用，尚未接入 CLI 自动执行；Agent Loop、编辑和命令工具尚未实现。当前实现已通过离线模拟测试，助手未使用真实密钥进行 API 验证。
 
 ## 安装与运行
 
@@ -79,6 +79,52 @@ HTTPX 默认读取 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写形式
 
 不要只改协议而忽略端口支持的实际协议。程序会提示客户端配置或依赖错误并继续等待输入，不会自动替换或绕过代理。参见 [HTTPX 代理说明](https://www.python-httpx.org/advanced/proxies/) 与 [环境变量说明](https://www.python-httpx.org/environment_variables/)。
 
+## 受限文件读取
+
+安装后可在 Python 中直接调用：
+
+```python
+from minicode.tools.files import FileReadError, read_file
+
+try:
+    text = read_file("/home/wusiqi/my-project/MiniCode", "src/minicode/session.py")
+    print(text)
+except FileReadError as error:
+    print(error)
+```
+
+第一个参数显式指定项目根目录，第二个参数必须是相对路径。返回完整的 UTF-8 文本，保留换行和空白；空文件返回空字符串。文件最多 64 KiB（按字节计），超限直接拒绝，不返回截断内容。目录、特殊文件、含空字节或无效 UTF-8 的文件会报错；这不是通用文件类型检测器。
+
+路径解析后必须仍在项目内；项目内的符号链接可以读取，指向项目外的链接会被拒绝。请求路径和解析后的路径均检查敏感名称：`.env` 及 `.env.*`（包括 `.env.example`）、`.git`、`.ssh`、`.aws`、`.azure`、`.gnupg`、`.kube`、常见凭据和 secrets 文件、常见 SSH 私钥名，以及 `.key`、`.pem`、`.p12`、`.pfx`、`.keystore` 后缀。完整名单见 `tools/files.py`。
+
+该规则不能识别任意名称文件或普通源码中包含的全部秘密；路径检查也不构成抵御并发恶意替换文件或目录的沙箱，仅用于可信本地项目。`read_file()` 本身不会将读取内容写入对话历史或发送到模型服务；调用方把内容加入模型请求前，必须告知用户文件内容可能发送到配置的模型服务。
+
+## 离线工具分发
+
+```python
+from minicode.tools.registry import dispatch_tool
+
+result = dispatch_tool(
+    "/home/wusiqi/my-project/MiniCode",
+    "call_1",
+    "read_file",
+    '{"relative_path": "src/minicode/session.py"}',
+)
+print(result.tool_call_id, result.status, result.content)
+```
+
+注册表目前只允许 `read_file`，参数必须是 JSON 对象且只包含非空字符串 `relative_path`。程序指定项目根目录，工具参数不能修改它。结果包含请求标识、`success/error` 状态和完整文件文本或错误提示；非法请求不会执行读取。请求标识必须是非空字符串，否则抛出 `ValueError`。这是 Python 调用接口，不会自动发送文件内容。
+
+## 模型工具协议（尚未接入 CLI）
+
+`request_model(messages, config, use_tools=True)` 会向配置的服务发送一次请求，并提供 `read_file` 的工具说明。它返回 `ModelReply`：可能包含普通文本，也可能包含有序的 `ToolCall`；它只解析响应，不执行工具。默认 `use_tools=False`，CLI 使用的 `ask_model()` 仍只接收文本回答。
+
+调用方可把 `reply.tool_calls` 交给 `dispatch_tool_calls(project_root, reply.tool_calls)`，获得有序结果。构造下一次消息列表的顺序是：原消息、`reply.as_message()`、各个 `result.as_message()`。每个结果是带 `tool_call_id` 的 tool 消息，内容用 JSON 编码 `status` 和 `content`，读取失败和空文件可以清楚区分。只有调用方显式再次调用 `request_model()` 才会发送这些结果；本阶段没有自动循环，也不把工具消息写入 Session。
+
+**文件内容一旦被加入真实模型请求，就会发送到配置的模型服务。调用方必须在发送前明确告知用户这一数据流向。** 现有 CLI 尚未开放文件工具。协议链已通过临时文件和模拟 HTTP 响应验证，真实服务的工具调用尚未验证。后续将在第六阶段加入项目根目录入口、交互提示、Agent Loop 与停止限制。
+
+协议依据：[DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)。工具说明不能替代程序的参数和路径校验。
+
 ## 测试
 
 在已激活的虚拟环境中、项目根目录下执行：
@@ -98,7 +144,10 @@ python -m pytest
 - `src/minicode/cli.py`：输入循环，协调配置、会话和模型调用，处理清空与退出。
 - `src/minicode/session.py`：构造包含历史的请求副本，保存成功的问答，清空历史。
 - `src/minicode/config.py`：读取并校验配置，配置对象的文本表示隐藏密钥。
-- `src/minicode/llm.py`：发送消息列表、校验回答、转换错误提示，不自行保存历史。
+- `src/minicode/llm.py`：发送消息列表，解析文本或工具请求、转换错误提示，不执行工具或保存历史。
+- `src/minicode/models.py`：模型回复与工具请求数据类，生成 assistant 消息。
+- `src/minicode/tools/files.py`：校验读取范围、敏感路径及大小，返回 UTF-8 文本或 `FileReadError`。
+- `src/minicode/tools/registry.py`：注册及描述工具，校验并顺序分发请求，将结果转换为带编号的 tool 消息。
 - `.env.example`：不含密钥的配置模板。
 - `tests/`：配置、HTTP 请求响应、交互和模块入口的离线测试。
 
