@@ -14,7 +14,7 @@ class ModelError(Exception):
 def ask_model(
     messages: list[dict[str, str]], config: Config, *, transport: httpx.BaseTransport | None = None
 ) -> str:
-    """保留 CLI 的纯文本接口，不向模型开放工具。"""
+    """保留纯文本 Python 接口，不向模型开放工具。"""
     reply = request_model(messages, config, transport=transport)
     # 未开放工具时，响应解析器保证返回非空文本。
     assert reply.content is not None

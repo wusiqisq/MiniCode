@@ -10,7 +10,8 @@ import pytest
 
 from minicode.cli import main
 from minicode.config import Config, ConfigError
-from minicode.llm import ModelError, ask_model
+from minicode.llm import ModelError, request_model
+from minicode.models import ModelReply
 
 
 def test_normal_input_keeps_waiting(monkeypatch, capsys):
@@ -19,11 +20,11 @@ def test_normal_input_keeps_waiting(monkeypatch, capsys):
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
     prompts = []
 
-    def fake_ask(messages, config):
-        prompts.append(messages)
-        return "模拟模型回答"
+    def fake_ask(messages, config, **kwargs):
+        prompts.append(messages[1:])
+        return ModelReply("模拟模型回答")
 
-    monkeypatch.setattr("minicode.cli.ask_model", fake_ask)
+    monkeypatch.setattr("minicode.agent.request_model", fake_ask)
 
     main()
 
@@ -111,12 +112,12 @@ def test_model_error_allows_next_question(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
 
-    def fake_ask(messages, config):
+    def fake_ask(messages, config, **kwargs):
         if messages[-1]["content"] == "问题一":
             raise ModelError("请求超时")
-        return "恢复后的回答"
+        return ModelReply("恢复后的回答")
 
-    monkeypatch.setattr("minicode.cli.ask_model", fake_ask)
+    monkeypatch.setattr("minicode.agent.request_model", fake_ask)
     main()
     output = capsys.readouterr().out
     assert "请求超时" in output
@@ -128,10 +129,10 @@ def test_interrupt_during_request(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda prompt: "你好")
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
 
-    def interrupted_request(*args):
+    def interrupted_request(*args, **kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("minicode.cli.ask_model", interrupted_request)
+    monkeypatch.setattr("minicode.agent.request_model", interrupted_request)
     main()
     captured = capsys.readouterr()
     assert "已中断，程序退出。" in captured.out
@@ -157,11 +158,11 @@ def test_clear_needs_no_config_or_request(monkeypatch, capsys, clear_command):
     inputs = iter([clear_command, clear_command, "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    def unexpected_call(*args):
+    def unexpected_call(*args, **kwargs):
         pytest.fail("清空命令不应加载模型配置或发送请求")
 
     monkeypatch.setattr("minicode.cli.load_config", unexpected_call)
-    monkeypatch.setattr("minicode.cli.ask_model", unexpected_call)
+    monkeypatch.setattr("minicode.agent.request_model", unexpected_call)
     main()
     output = capsys.readouterr().out
     assert output.count("已清空对话历史。") == 2
@@ -185,8 +186,8 @@ def test_history_failure_and_clear_through_http(monkeypatch, capsys):
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
-        "minicode.cli.ask_model",
-        lambda messages, config: ask_model(messages, config, transport=transport),
+        "minicode.agent.request_model",
+        lambda messages, config, **kwargs: request_model(messages, config, use_tools=True, transport=transport),
     )
     main()
 
@@ -194,7 +195,7 @@ def test_history_failure_and_clear_through_http(monkeypatch, capsys):
         {"role": "user", "content": "记住暗号739"},
         {"role": "assistant", "content": "模拟回答"},
     ]
-    assert [payload["messages"] for payload in payloads] == [
+    assert [payload["messages"][1:] for payload in payloads] == [
         [{"role": "user", "content": "记住暗号739"}],
         saved_turn + [{"role": "user", "content": "失败问题"}],
         saved_turn + [{"role": "user", "content": "暗号是什么"}],
@@ -221,11 +222,11 @@ def test_configuration_failure_is_not_saved(monkeypatch, capsys):
     captured_messages = []
     monkeypatch.setattr("minicode.cli.load_config", config_for_turn)
 
-    def fake_ask(messages, config):
-        captured_messages.append(messages)
-        return "回答"
+    def fake_ask(messages, config, **kwargs):
+        captured_messages.append(messages[1:])
+        return ModelReply("回答")
 
-    monkeypatch.setattr("minicode.cli.ask_model", fake_ask)
+    monkeypatch.setattr("minicode.agent.request_model", fake_ask)
     main()
     assert captured_messages == [[{"role": "user", "content": "有效问题"}]]
     assert "缺少密钥" in capsys.readouterr().out
@@ -237,11 +238,11 @@ def test_new_cli_run_does_not_restore_history(monkeypatch, capsys):
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
     requests = []
 
-    def fake_ask(messages, config):
-        requests.append(messages)
-        return "模拟回答"
+    def fake_ask(messages, config, **kwargs):
+        requests.append(messages[1:])
+        return ModelReply("模拟回答")
 
-    monkeypatch.setattr("minicode.cli.ask_model", fake_ask)
+    monkeypatch.setattr("minicode.agent.request_model", fake_ask)
     main()
     main()
     assert requests == [
@@ -249,3 +250,69 @@ def test_new_cli_run_does_not_restore_history(monkeypatch, capsys):
         [{"role": "user", "content": "新问题"}],
     ]
     assert capsys.readouterr().out.count("欢迎使用 MiniCode") == 2
+
+
+def test_cli_discloses_file_sending_before_request_and_saves_tools(monkeypatch, capsys, tmp_path):
+    (tmp_path / "a.txt").write_text("文件正文")
+    inputs = iter(["读取 a.txt", "下一问", "/clear", "新会话", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
+    payloads = []
+    output_at_request = []
+
+    def handler(request):
+        output_at_request.append(capsys.readouterr().out)
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            message = {"content": None, "tool_calls": [{
+                "id": "one", "type": "function", "function": {
+                    "name": "read_file", "arguments": '{"relative_path":"a.txt"}',
+                },
+            }]}
+            reason = "tool_calls"
+        else:
+            message, reason = {"content": "回答"}, "stop"
+        return httpx.Response(200, json={"choices": [{"message": message, "finish_reason": reason}]})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "minicode.agent.request_model",
+        lambda messages, config, **kwargs: request_model(messages, config, use_tools=True, transport=transport),
+    )
+    main()
+    assert f"项目根目录：{tmp_path}" in output_at_request[0]
+    assert "读取的文件内容将发送到配置的模型服务" in output_at_request[0]
+    assert "历史仅保存在本次运行内存中" in output_at_request[0]
+    assert json.loads(payloads[1]["messages"][-1]["content"])["content"] == "文件正文"
+    assert [m["role"] for m in payloads[2]["messages"]] == ["system", "user", "assistant", "tool", "assistant", "user"]
+    assert [m["role"] for m in payloads[3]["messages"]] == ["system", "user"]
+    assert capsys.readouterr().out.endswith("再见！\n")
+
+
+def test_cli_stopped_task_allows_next_question(monkeypatch, capsys):
+    inputs = iter(["坏任务", "下一题", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
+    payloads = []
+
+    def handler(request):
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            message = {"content": None, "tool_calls": [{
+                "id": str(i), "type": "function", "function": {"name": "unknown", "arguments": "{}"},
+            } for i in range(4)]}
+            reason = "tool_calls"
+        else:
+            message, reason = {"content": "恢复"}, "stop"
+        return httpx.Response(200, json={"choices": [{"message": message, "finish_reason": reason}]})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "minicode.agent.request_model",
+        lambda messages, config, **kwargs: request_model(messages, config, use_tools=True, transport=transport),
+    )
+    main()
+    assert payloads[1]["messages"][1:] == [{"role": "user", "content": "下一题"}]
+    output = capsys.readouterr().out
+    assert "任务未完成：连续工具失败达到上限" in output
+    assert "MiniCode > 恢复" in output
