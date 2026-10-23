@@ -20,6 +20,13 @@ class FileReadError(ValueError):
 
 
 def _check_sensitive(path: Path) -> None:
+    """按路径的每一段检查默认排除的敏感名称。
+
+    输入：path 是待检查的相对 Path；同时用于请求路径和解析后的项目内路径。
+    输出：无返回值；全部名称允许时正常结束。
+    异常：遇到敏感目录、文件名或密钥后缀时抛出 FileReadError。
+    只检查名称，不访问磁盘，也不能识别源码中硬编码的所有秘密。
+    """
     for part in path.parts:
         name = part.casefold()
         if (
@@ -30,11 +37,17 @@ def _check_sensitive(path: Path) -> None:
             raise FileReadError("拒绝读取默认排除的敏感路径。")
 
 
-def read_file(project_root: str | Path, relative_path: str) -> str:
-    """返回至多 64 KiB 的完整 UTF-8 文本，保留原有空白。
+def read_file(
+    project_root: str | Path,
+    relative_path: str,
+) -> str:
+    """在指定项目根目录内读取一个完整的小型 UTF-8 文本文件。
 
-    路径按调用时状态校验；这不是抵御并发恶意文件替换的沙箱。
-    默认敏感路径列表也不能识别普通源码中硬编码的所有秘密。
+    输入：project_root 是已存在的项目根目录；relative_path 是相对文件路径。
+    输出：保留原始空白和换行的完整字符串；空文件返回空字符串。
+    异常：越界、敏感路径、非普通文件、超过 64 KiB、读取或编码失败时，
+        统一抛出可展示的 FileReadError，不返回部分内容。
+    只读取磁盘，不修改文件或发送网络请求；不能防御并发恶意路径替换。
     """
     if not isinstance(relative_path, str) or not relative_path.strip() or "\x00" in relative_path:
         raise FileReadError("文件路径必须是非空的相对路径，且不能包含空字符。")

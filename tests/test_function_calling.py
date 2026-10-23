@@ -13,20 +13,36 @@ from minicode.tools import registry
 from minicode.tools.registry import dispatch_tool_calls, tool_definitions
 
 
-def tool_call(call_id="call_1", name="read_file", arguments='{"relative_path":"file.txt"}'):
+def tool_call(
+    call_id="call_1",
+    name="read_file",
+    arguments='{"relative_path":"file.txt"}',
+):
+    """构造模拟工具请求：输入编号、名称和原始参数字符串，返回协议字典。"""
     return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
 
 
-def completion(calls, content=None, finish_reason="tool_calls"):
+def completion(
+    calls,
+    content=None,
+    finish_reason="tool_calls",
+):
+    """构造模拟响应：输入工具请求、文本和结束标志，返回模型响应字典，不调用网络。"""
     return {"choices": [{
         "message": {"role": "assistant", "content": content, "tool_calls": calls},
         "finish_reason": finish_reason,
     }]}
 
 
-def request_reply(body, *, use_tools=True):
+def request_reply(
+    body,
+    *,
+    use_tools=True,
+):
+    """使用模拟 HTTP 请求模型：输入响应体及请求选项，返回解析后的 ModelReply，不执行工具。"""
     return request_model(
-        [{"role": "user", "content": "读取文件"}], Config(api_key="test-key"),
+        [{"role": "user", "content": "读取文件"}],
+        Config(api_key="test-key"),
         use_tools=use_tools,
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)),
     )
@@ -37,11 +53,17 @@ def test_tools_schema_and_text_response():
 
     def handler(request):
         requests.append(json.loads(request.content))
-        return httpx.Response(200, json=completion(None, " 普通回答 ", "stop"))
+        return httpx.Response(200, json=completion(
+            None,
+            " 普通回答 ",
+            "stop",
+        ))
 
     reply = request_model(
-        [{"role": "user", "content": "你好"}], Config(api_key="test-key"),
-        use_tools=True, transport=httpx.MockTransport(handler),
+        [{"role": "user", "content": "你好"}],
+        Config(api_key="test-key"),
+        use_tools=True,
+        transport=httpx.MockTransport(handler),
     )
     assert reply == ModelReply("普通回答")
     assert reply.as_message() == {"role": "assistant", "content": "普通回答"}
@@ -66,17 +88,33 @@ def test_tool_definitions_are_fresh_and_registered():
 
 
 @pytest.mark.parametrize("content", [None, "", "我先查看文件。"])
-def test_parse_and_rebuild_tool_message_without_executing(tmp_path, monkeypatch, content):
+def test_parse_and_rebuild_tool_message_without_executing(
+    tmp_path,
+    monkeypatch,
+    content,
+):
     def forbidden(*args):
         pytest.fail("解析模型回复不应执行工具")
 
-    monkeypatch.setattr(registry, "read_file", forbidden)
+    monkeypatch.setattr(
+        registry,
+        "read_file",
+        forbidden,
+    )
     calls = [tool_call(), tool_call("call_2")]
     reply = request_reply(completion(calls, content))
     assert reply.content == content
     assert reply.tool_calls == (
-        ToolCall("call_1", "read_file", '{"relative_path":"file.txt"}'),
-        ToolCall("call_2", "read_file", '{"relative_path":"file.txt"}'),
+        ToolCall(
+            "call_1",
+            "read_file",
+            '{"relative_path":"file.txt"}',
+        ),
+        ToolCall(
+            "call_2",
+            "read_file",
+            '{"relative_path":"file.txt"}',
+        ),
     )
     assert reply.as_message() == {"role": "assistant", "content": content, "tool_calls": calls}
     reply.as_message()["tool_calls"][0]["function"]["name"] = "changed"
@@ -96,11 +134,18 @@ INVALID_CALLS = [
 
 
 @pytest.mark.parametrize("calls", INVALID_CALLS)
-def test_malformed_tool_responses_rejected_before_dispatch(monkeypatch, calls):
+def test_malformed_tool_responses_rejected_before_dispatch(
+    monkeypatch,
+    calls,
+):
     def forbidden(*args):
         pytest.fail("协议错误不应执行工具")
 
-    monkeypatch.setattr(registry, "read_file", forbidden)
+    monkeypatch.setattr(
+        registry,
+        "read_file",
+        forbidden,
+    )
     with pytest.raises(ModelError):
         request_reply(completion(calls))
 
@@ -127,18 +172,32 @@ def test_invalid_tool_content_rejected(content):
         request_reply(completion([tool_call()], content))
 
 
-@pytest.mark.parametrize("reason", ["stop", "length", "aborted", "content_filter", None])
+@pytest.mark.parametrize(
+    "reason",
+    ["stop", "length", "aborted", "content_filter", None],
+)
 def test_inconsistent_or_incomplete_tool_response_rejected(reason):
     with pytest.raises(ModelError):
-        request_reply(completion([tool_call()], "不能当作完整回答", reason))
+        request_reply(completion(
+            [tool_call()],
+            "不能当作完整回答",
+            reason,
+        ))
 
 
-@pytest.mark.parametrize("body", [
-    {"choices": {}}, {"choices": "bad"},
-    {"choices": [{"message": [], "finish_reason": "stop"}]},
-    {"choices": [{"message": {"role": "tool", "content": "bad"}, "finish_reason": "stop"}]},
-    completion({}, "text", "stop"),
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": {}}, {"choices": "bad"},
+        {"choices": [{"message": [], "finish_reason": "stop"}]},
+        {"choices": [{"message": {"role": "tool", "content": "bad"}, "finish_reason": "stop"}]},
+        completion(
+            {},
+            "text",
+            "stop",
+        ),
+    ],
+)
 def test_malformed_envelope_rejected(body):
     with pytest.raises(ModelError):
         request_reply(body)
@@ -147,12 +206,19 @@ def test_malformed_envelope_rejected(body):
 def test_text_interface_rejects_unsolicited_tool_request():
     with pytest.raises(ModelError, match="未开放工具"):
         ask_model(
-            [{"role": "user", "content": "你好"}], Config(api_key="test-key"),
-            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=completion([tool_call()]))),
+            [{"role": "user", "content": "你好"}],
+            Config(api_key="test-key"),
+            transport=httpx.MockTransport(lambda request: httpx.Response(
+                200,
+                json=completion([tool_call()]),
+            )),
         )
 
 
-def test_ordered_dispatch_and_next_request_round_trip(tmp_path, monkeypatch):
+def test_ordered_dispatch_and_next_request_round_trip(
+    tmp_path,
+    monkeypatch,
+):
     # 由测试明确发起第二次请求，不引入自动 Agent Loop。
     (tmp_path / "file.txt").write_bytes("中文\r\n".encode())
     (tmp_path / "empty.txt").write_text("")
@@ -166,19 +232,35 @@ def test_ordered_dispatch_and_next_request_round_trip(tmp_path, monkeypatch):
     reads = []
     actual_read = registry.read_file
 
-    def read(root, path):
+    def read(
+        root,
+        path,
+    ):
         reads.append(path)
         return actual_read(root, path)
 
-    monkeypatch.setattr(registry, "read_file", read)
+    monkeypatch.setattr(
+        registry,
+        "read_file",
+        read,
+    )
 
     def handler(request):
         requests.append(json.loads(request.content))
-        body = completion(calls) if len(requests) == 1 else completion(None, "完成", "stop")
+        body = completion(calls) if len(requests) == 1 else completion(
+            None,
+            "完成",
+            "stop",
+        )
         return httpx.Response(200, json=body)
 
     transport = httpx.MockTransport(handler)
-    reply = request_model(messages, Config(api_key="test-key"), use_tools=True, transport=transport)
+    reply = request_model(
+        messages,
+        Config(api_key="test-key"),
+        use_tools=True,
+        transport=transport,
+    )
     results = dispatch_tool_calls(tmp_path, reply.tool_calls)
     assert reads == ["file.txt", "missing", "empty.txt"]
     assert [result.tool_call_id for result in results] == ["one", "two", "three"]
@@ -190,19 +272,31 @@ def test_ordered_dispatch_and_next_request_round_trip(tmp_path, monkeypatch):
     assert json.loads(tool_messages[1]["content"])["status"] == "error"
     assert json.loads(tool_messages[2]["content"]) == {"status": "success", "content": ""}
     followup = messages + [reply.as_message()] + tool_messages
-    final = request_model(followup, Config(api_key="test-key"), use_tools=True, transport=transport)
+    final = request_model(
+        followup,
+        Config(api_key="test-key"),
+        use_tools=True,
+        transport=transport,
+    )
     assert final == ModelReply("完成")
     assert requests[1]["messages"] == followup
     assert messages == original
     assert len(requests) == 2
 
 
-@pytest.mark.parametrize("name,arguments", [
-    ("delete_file", '{}'), ("read_file", '{bad-json'),
-    ("read_file", '{"relative_path":"file.txt","project_root":"/"}'),
-    ("read_file", '{"relative_path":".env"}'),
-])
-def test_invalid_tool_semantics_become_result_messages(tmp_path, name, arguments):
+@pytest.mark.parametrize(
+    "name,arguments",
+    [
+        ("delete_file", '{}'), ("read_file", '{bad-json'),
+        ("read_file", '{"relative_path":"file.txt","project_root":"/"}'),
+        ("read_file", '{"relative_path":".env"}'),
+    ],
+)
+def test_invalid_tool_semantics_become_result_messages(
+    tmp_path,
+    name,
+    arguments,
+):
     # 协议结构合法，但工具或参数无效，应返回工具错误供后续模型理解。
     reply = request_reply(completion([tool_call(name=name, arguments=arguments)]))
     result, = dispatch_tool_calls(tmp_path, reply.tool_calls)

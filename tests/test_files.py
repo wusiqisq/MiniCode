@@ -13,7 +13,10 @@ def test_read_text_and_preserve_whitespace(tmp_path):
 
 
 @pytest.mark.parametrize("size", [0, MAX_READ_BYTES])
-def test_empty_and_exact_size_limit(tmp_path, size):
+def test_empty_and_exact_size_limit(
+    tmp_path,
+    size,
+):
     (tmp_path / "file.txt").write_bytes(b"a" * size)
     assert read_file(str(tmp_path), "file.txt") == "a" * size
 
@@ -24,7 +27,10 @@ def test_size_limit_counts_bytes(tmp_path):
         read_file(tmp_path, "large.txt")
 
 
-def test_bounded_read_even_if_size_check_is_stale(tmp_path, monkeypatch):
+def test_bounded_read_even_if_size_check_is_stale(
+    tmp_path,
+    monkeypatch,
+):
     (tmp_path / "growing.txt").write_bytes(b"a" * (MAX_READ_BYTES + 1))
     actual_fstat = os.fstat
 
@@ -33,13 +39,20 @@ def test_bounded_read_even_if_size_check_is_stale(tmp_path, monkeypatch):
         values[6] = 0  # 模拟检查大小后文件增长；仍须限制实际读取。
         return os.stat_result(values)
 
-    monkeypatch.setattr(os, "fstat", stale_size)
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        stale_size,
+    )
     with pytest.raises(FileReadError, match="64 KiB"):
         read_file(tmp_path, "growing.txt")
 
 
 @pytest.mark.parametrize("path", ["", "  ", "a\x00b", None, 123])
-def test_invalid_path(tmp_path, path):
+def test_invalid_path(
+    tmp_path,
+    path,
+):
     with pytest.raises(FileReadError, match="非空的相对路径"):
         read_file(tmp_path, path)
 
@@ -65,11 +78,17 @@ def test_internal_parent_component_is_allowed(tmp_path):
     assert read_file(tmp_path, "src/../file.txt") == "inside"
 
 
-@pytest.mark.parametrize("name", [
-    ".env", ".env.local", ".env.example", ".ENV", ".git/config", ".ssh/config",
-    ".aws/credentials", "private.pem", "server.key", "secrets.toml", "id_ed25519",
-])
-def test_sensitive_paths_rejected(tmp_path, name):
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".env", ".env.local", ".env.example", ".ENV", ".git/config", ".ssh/config",
+        ".aws/credentials", "private.pem", "server.key", "secrets.toml", "id_ed25519",
+    ],
+)
+def test_sensitive_paths_rejected(
+    tmp_path,
+    name,
+):
     path = tmp_path / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("private-content")
@@ -108,7 +127,10 @@ def test_sensitive_alias_to_normal_file_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("path", ["missing", "broken", "loop"])
-def test_missing_and_broken_or_looping_links(tmp_path, path):
+def test_missing_and_broken_or_looping_links(
+    tmp_path,
+    path,
+):
     (tmp_path / "broken").symlink_to("missing")
     (tmp_path / "loop").symlink_to("loop")
     with pytest.raises(FileReadError):
@@ -126,19 +148,32 @@ def test_directory_and_invalid_root(tmp_path):
 
 
 @pytest.mark.parametrize("content", [b"\xff\xfe", b"text\x00binary"])
-def test_non_text_rejected(tmp_path, content):
+def test_non_text_rejected(
+    tmp_path,
+    content,
+):
     (tmp_path / "binary").write_bytes(content)
     with pytest.raises(FileReadError, match="文本"):
         read_file(tmp_path, "binary")
 
 
-def test_permission_error_is_sanitized(tmp_path, monkeypatch):
+def test_permission_error_is_sanitized(
+    tmp_path,
+    monkeypatch,
+):
     (tmp_path / "file").write_text("text")
 
-    def denied(*args, **kwargs):
+    def denied(
+        *args,
+        **kwargs,
+    ):
         raise PermissionError("private-system-details")
 
-    monkeypatch.setattr(os, "open", denied)
+    monkeypatch.setattr(
+        os,
+        "open",
+        denied,
+    )
     with pytest.raises(FileReadError, match="权限") as error:
         read_file(tmp_path, "file")
     assert "private-system-details" not in str(error.value)

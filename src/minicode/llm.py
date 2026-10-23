@@ -12,20 +12,45 @@ class ModelError(Exception):
 
 
 def ask_model(
-    messages: list[dict[str, str]], config: Config, *, transport: httpx.BaseTransport | None = None
+    messages: list[dict[str, str]],
+    config: Config,
+    *,
+    transport: httpx.BaseTransport | None = None,
 ) -> str:
-    """保留纯文本 Python 接口，不向模型开放工具。"""
-    reply = request_model(messages, config, transport=transport)
+    """调用一次模型并只返回最终文本，不开放工具。
+
+    输入：messages 是待发送的完整消息列表；config 是模型配置；
+        transport 是可选 HTTP 传输对象，测试中可使用模拟器。
+    输出：模型正常结束后返回的非空文本字符串。
+    异常：连接、服务或响应异常时抛出 ModelError；中断向外传递。
+    会发送网络请求；不执行工具、不裁剪上下文，也不更新 Session。
+    """
+    reply = request_model(
+        messages,
+        config,
+        transport=transport,
+    )
     # 未开放工具时，响应解析器保证返回非空文本。
     assert reply.content is not None
     return reply.content
 
 
 def request_model(
-    messages: list[dict], config: Config, *, use_tools: bool = False,
+    messages: list[dict],
+    config: Config,
+    *,
+    use_tools: bool = False,
     transport: httpx.BaseTransport | None = None,
 ) -> ModelReply:
-    """只发出一次请求；工具需显式开启，调用方负责告知用户数据流向。"""
+    """发送一次同步模型请求，将响应转换成内部 ModelReply。
+
+    输入：messages 是完整消息列表；config 提供模型、接口、密钥和超时；
+        use_tools 控制是否附带工具说明；transport 用于替换默认 HTTP 传输。
+    输出：ModelReply，包含最终文本或有序的结构化工具请求。
+    异常：客户端、网络、HTTP 服务及模型协议错误转成不含密钥的 ModelError。
+    只调用一次，不重试、不执行工具、不保存历史、不自动裁剪上下文。
+    调用方需先告知用户数据流向；Agent Loop 负责请求前的上下文预算检查。
+    """
     payload = {
         "model": config.model,
         "messages": messages,
@@ -80,7 +105,18 @@ def request_model(
     return _parse_reply(body, use_tools=use_tools)
 
 
-def _parse_reply(body: object, *, use_tools: bool) -> ModelReply:
+def _parse_reply(
+    body: object,
+    *,
+    use_tools: bool,
+) -> ModelReply:
+    """校验模型响应的结束标志与消息结构，解析整批工具请求。
+
+    输入：body 是解码后的响应 JSON 对象；use_tools 表示此次请求是否开放工具。
+    输出：ModelReply；普通回答必须非空，工具请求保留编号和原始参数字符串。
+    异常：缺字段、错误类型、重复编号、冲突结束标志或不完整回答抛出 ModelError。
+    仅解析数据，不执行工具，也不在这里校验工具名与参数 JSON 内容是否合法。
+    """
     try:
         choices = body["choices"]
         if not isinstance(choices, list) or len(choices) != 1:
@@ -89,7 +125,10 @@ def _parse_reply(body: object, *, use_tools: bool) -> ModelReply:
         message = choice["message"]
         content = message["content"]
         finish_reason = choice["finish_reason"]
-        if not isinstance(message, dict) or message.get("role", "assistant") != "assistant":
+        if (
+            not isinstance(message, dict)
+            or message.get("role", "assistant") != "assistant"
+        ):
             raise ValueError
         calls = message.get("tool_calls")
         if calls is not None and not isinstance(calls, list):
@@ -119,7 +158,13 @@ def _parse_reply(body: object, *, use_tools: bool) -> ModelReply:
                 ):
                     raise ValueError
                 ids.add(call_id)
-                parsed.append(ToolCall(call_id, name, arguments))
+                parsed.append(
+                    ToolCall(
+                        call_id,
+                        name,
+                        arguments,
+                    )
+                )
         except (ValueError, KeyError, TypeError):
             raise ModelError("模型工具请求格式异常，未执行工具。") from None
         return ModelReply(content, tuple(parsed))

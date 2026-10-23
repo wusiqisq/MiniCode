@@ -15,6 +15,8 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class Config:
+    """模型配置：api_key 是密钥（不参与对象打印），其余字段是模型、地址和超时秒数。"""
+
     api_key: str = field(repr=False)
     model: str = "deepseek-flash"
     base_url: str = "https://api.deepseek.com"
@@ -22,13 +24,28 @@ class Config:
 
 
 def load_config() -> Config:
-    """只读取当前目录的 .env，不向父目录搜索或修改进程环境。"""
+    """读取、校验模型配置，返回可供模型客户端使用的 Config。
+
+    输入：无显式参数；读取当前目录 .env 和进程环境变量，环境变量优先。
+    输出：包含密钥、模型、HTTPS 基础地址和超时秒数的 Config 对象。
+    异常：读取失败、缺少密钥或配置格式错误时抛出 ConfigError。
+    不会修改环境变量，也不会发送网络请求或输出密钥。
+    """
     try:
         file_values = dotenv_values(Path.cwd() / ".env", interpolate=False)
     except (OSError, UnicodeError):
         raise ConfigError("无法读取当前目录的 .env，请检查文件权限和 UTF-8 编码。") from None
 
-    def value(name: str, default: str = "") -> str:
+    def value(
+        name: str,
+        default: str = "",
+    ) -> str:
+        """按优先级取一个配置项，并返回去掉两端空白的字符串。
+
+        输入：name 是配置名，default 是未配置时的默认字符串。
+        输出：环境变量优先，其次 .env，最后默认值；显式空环境变量仍优先。
+        读取外层已加载的 file_values，不修改任何配置。
+        """
         return (os.environ.get(name, file_values.get(name) or default)).strip()
 
     api_key = value("DEEPSEEK_API_KEY")
@@ -59,4 +76,9 @@ def load_config() -> Config:
         raise ConfigError("DEEPSEEK_TIMEOUT 必须是大于 0 的有限秒数。") from None
     if not math.isfinite(timeout) or timeout <= 0:
         raise ConfigError("DEEPSEEK_TIMEOUT 必须是大于 0 的有限秒数。")
-    return Config(api_key=api_key, model=model, base_url=base_url, timeout=timeout)
+    return Config(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        timeout=timeout,
+    )

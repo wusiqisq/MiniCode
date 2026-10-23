@@ -17,7 +17,8 @@ def test_dotenv_and_defaults():
 
 def test_environment_overrides_dotenv(monkeypatch):
     Path(".env").write_text(
-        "DEEPSEEK_API_KEY=file-key\nDEEPSEEK_MODEL=file-model\n", encoding="utf-8"
+        "DEEPSEEK_API_KEY=file-key\nDEEPSEEK_MODEL=file-model\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
     monkeypatch.setenv("DEEPSEEK_MODEL", "custom-model")
@@ -31,14 +32,20 @@ def test_environment_overrides_dotenv(monkeypatch):
 
 
 @pytest.mark.parametrize("key", [None, "", "   "])
-def test_missing_key(monkeypatch, key):
+def test_missing_key(
+    monkeypatch,
+    key,
+):
     if key is not None:
         monkeypatch.setenv("DEEPSEEK_API_KEY", key)
     with pytest.raises(ConfigError, match="缺少 DEEPSEEK_API_KEY"):
         load_config()
 
 
-def test_parent_dotenv_not_loaded(tmp_path, monkeypatch):
+def test_parent_dotenv_not_loaded(
+    tmp_path,
+    monkeypatch,
+):
     (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=parent-key\n", encoding="utf-8")
     child = tmp_path / "child"
     child.mkdir()
@@ -64,7 +71,11 @@ def test_parent_dotenv_not_loaded(tmp_path, monkeypatch):
         ("DEEPSEEK_API_KEY", "中文密钥"),
     ],
 )
-def test_invalid_config(monkeypatch, name, value):
+def test_invalid_config(
+    monkeypatch,
+    name,
+    value,
+):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setenv(name, value)
     with pytest.raises(ConfigError, match=name):

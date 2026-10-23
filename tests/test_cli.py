@@ -14,13 +14,20 @@ from minicode.llm import ModelError, request_model
 from minicode.models import ModelReply
 
 
-def test_normal_input_keeps_waiting(monkeypatch, capsys):
+def test_normal_input_keeps_waiting(
+    monkeypatch,
+    capsys,
+):
     inputs = iter(["解释一个函数", "再解释一个", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
     prompts = []
 
-    def fake_ask(messages, config, **kwargs):
+    def fake_ask(
+        messages,
+        config,
+        **kwargs,
+    ):
         prompts.append(messages[1:])
         return ModelReply("模拟模型回答")
 
@@ -43,7 +50,11 @@ def test_normal_input_keeps_waiting(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\t"])
-def test_blank_input_is_skipped(monkeypatch, capsys, blank):
+def test_blank_input_is_skipped(
+    monkeypatch,
+    capsys,
+    blank,
+):
     inputs = iter([blank, "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
@@ -56,7 +67,11 @@ def test_blank_input_is_skipped(monkeypatch, capsys, blank):
 
 
 @pytest.mark.parametrize("command", ["/exit", "  /exit  "])
-def test_exit_command(monkeypatch, capsys, command):
+def test_exit_command(
+    monkeypatch,
+    capsys,
+    command,
+):
     monkeypatch.setattr("builtins.input", lambda prompt: command)
 
     main()
@@ -71,7 +86,12 @@ def test_exit_command(monkeypatch, capsys, command):
     ("exception", "message"),
     [(EOFError, "再见！"), (KeyboardInterrupt, "已中断，程序退出。")],
 )
-def test_input_termination(monkeypatch, capsys, exception, message):
+def test_input_termination(
+    monkeypatch,
+    capsys,
+    exception,
+    message,
+):
     def interrupted_input(prompt):
         raise exception
 
@@ -85,7 +105,10 @@ def test_input_termination(monkeypatch, capsys, exception, message):
 
 
 @pytest.mark.parametrize("user_input", ["你好\n\n/exit\n", "/clear\n/exit\n", ""])
-def test_module_entrypoint(tmp_path, user_input):
+def test_module_entrypoint(
+    tmp_path,
+    user_input,
+):
     # 在项目以外的目录启动，确认导入来自安装结果。
     result = subprocess.run(
         [sys.executable, "-m", "minicode"],
@@ -107,12 +130,19 @@ def test_module_entrypoint(tmp_path, user_input):
     assert result.stderr == ""
 
 
-def test_model_error_allows_next_question(monkeypatch, capsys):
+def test_model_error_allows_next_question(
+    monkeypatch,
+    capsys,
+):
     inputs = iter(["问题一", "问题二", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
 
-    def fake_ask(messages, config, **kwargs):
+    def fake_ask(
+        messages,
+        config,
+        **kwargs,
+    ):
         if messages[-1]["content"] == "问题一":
             raise ModelError("请求超时")
         return ModelReply("恢复后的回答")
@@ -125,11 +155,17 @@ def test_model_error_allows_next_question(monkeypatch, capsys):
     assert output.endswith("再见！\n")
 
 
-def test_interrupt_during_request(monkeypatch, capsys):
+def test_interrupt_during_request(
+    monkeypatch,
+    capsys,
+):
     monkeypatch.setattr("builtins.input", lambda prompt: "你好")
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
 
-    def interrupted_request(*args, **kwargs):
+    def interrupted_request(
+        *args,
+        **kwargs,
+    ):
         raise KeyboardInterrupt
 
     monkeypatch.setattr("minicode.agent.request_model", interrupted_request)
@@ -139,7 +175,10 @@ def test_interrupt_during_request(monkeypatch, capsys):
     assert captured.err == ""
 
 
-def test_invalid_proxy_does_not_crash_cli(monkeypatch, capsys):
+def test_invalid_proxy_does_not_crash_cli(
+    monkeypatch,
+    capsys,
+):
     inputs = iter(["你好", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
@@ -154,11 +193,18 @@ def test_invalid_proxy_does_not_crash_cli(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("clear_command", ["/clear", "  /clear  "])
-def test_clear_needs_no_config_or_request(monkeypatch, capsys, clear_command):
+def test_clear_needs_no_config_or_request(
+    monkeypatch,
+    capsys,
+    clear_command,
+):
     inputs = iter([clear_command, clear_command, "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
 
-    def unexpected_call(*args, **kwargs):
+    def unexpected_call(
+        *args,
+        **kwargs,
+    ):
         pytest.fail("清空命令不应加载模型配置或发送请求")
 
     monkeypatch.setattr("minicode.cli.load_config", unexpected_call)
@@ -169,7 +215,10 @@ def test_clear_needs_no_config_or_request(monkeypatch, capsys, clear_command):
     assert output.endswith("再见！\n")
 
 
-def test_history_failure_and_clear_through_http(monkeypatch, capsys):
+def test_history_failure_and_clear_through_http(
+    monkeypatch,
+    capsys,
+):
     inputs = iter(["记住暗号739", "失败问题", "暗号是什么", "/clear", "新问题", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
@@ -180,14 +229,24 @@ def test_history_failure_and_clear_through_http(monkeypatch, capsys):
         payloads.append(payload)
         if payload["messages"][-1]["content"] == "失败问题":
             return httpx.Response(503, text="service unavailable")
-        return httpx.Response(200, json={"choices": [{
-            "message": {"content": "模拟回答"}, "finish_reason": "stop"
-        }]})
+        return httpx.Response(
+            200,
+            json={"choices": [{
+                "message": {"content": "模拟回答"}, "finish_reason": "stop"
+            }]},
+        )
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
         "minicode.agent.request_model",
-        lambda messages, config, **kwargs: request_model(messages, config, use_tools=True, transport=transport),
+        lambda messages,
+        config,
+        **kwargs: request_model(
+            messages,
+            config,
+            use_tools=True,
+            transport=transport,
+        ),
     )
     main()
 
@@ -207,7 +266,10 @@ def test_history_failure_and_clear_through_http(monkeypatch, capsys):
     assert captured.err == ""
 
 
-def test_configuration_failure_is_not_saved(monkeypatch, capsys):
+def test_configuration_failure_is_not_saved(
+    monkeypatch,
+    capsys,
+):
     inputs = iter(["缺密钥的问题", "有效问题", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     # 第一次保持缺少密钥，第二次模拟用户补好配置。
@@ -222,7 +284,11 @@ def test_configuration_failure_is_not_saved(monkeypatch, capsys):
     captured_messages = []
     monkeypatch.setattr("minicode.cli.load_config", config_for_turn)
 
-    def fake_ask(messages, config, **kwargs):
+    def fake_ask(
+        messages,
+        config,
+        **kwargs,
+    ):
         captured_messages.append(messages[1:])
         return ModelReply("回答")
 
@@ -232,13 +298,20 @@ def test_configuration_failure_is_not_saved(monkeypatch, capsys):
     assert "缺少密钥" in capsys.readouterr().out
 
 
-def test_new_cli_run_does_not_restore_history(monkeypatch, capsys):
+def test_new_cli_run_does_not_restore_history(
+    monkeypatch,
+    capsys,
+):
     inputs = iter(["旧问题", "/exit", "新问题", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
     requests = []
 
-    def fake_ask(messages, config, **kwargs):
+    def fake_ask(
+        messages,
+        config,
+        **kwargs,
+    ):
         requests.append(messages[1:])
         return ModelReply("模拟回答")
 
@@ -252,7 +325,11 @@ def test_new_cli_run_does_not_restore_history(monkeypatch, capsys):
     assert capsys.readouterr().out.count("欢迎使用 MiniCode") == 2
 
 
-def test_cli_discloses_file_sending_before_request_and_saves_tools(monkeypatch, capsys, tmp_path):
+def test_cli_discloses_file_sending_before_request_and_saves_tools(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
     (tmp_path / "a.txt").write_text("文件正文")
     inputs = iter(["读取 a.txt", "下一问", "/clear", "新会话", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
@@ -272,16 +349,26 @@ def test_cli_discloses_file_sending_before_request_and_saves_tools(monkeypatch, 
             reason = "tool_calls"
         else:
             message, reason = {"content": "回答"}, "stop"
-        return httpx.Response(200, json={"choices": [{"message": message, "finish_reason": reason}]})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": message, "finish_reason": reason}]},
+        )
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
         "minicode.agent.request_model",
-        lambda messages, config, **kwargs: request_model(messages, config, use_tools=True, transport=transport),
+        lambda messages,
+        config,
+        **kwargs: request_model(
+            messages,
+            config,
+            use_tools=True,
+            transport=transport,
+        ),
     )
     main()
     assert f"项目根目录：{tmp_path}" in output_at_request[0]
-    assert "读取的文件内容将发送到配置的模型服务" in output_at_request[0]
+    assert "读取的文件内容（包括搜索片段）将发送到配置的模型服务" in output_at_request[0]
     assert "历史仅保存在本次运行内存中" in output_at_request[0]
     assert json.loads(payloads[1]["messages"][-1]["content"])["content"] == "文件正文"
     assert [m["role"] for m in payloads[2]["messages"]] == ["system", "user", "assistant", "tool", "assistant", "user"]
@@ -289,7 +376,10 @@ def test_cli_discloses_file_sending_before_request_and_saves_tools(monkeypatch, 
     assert capsys.readouterr().out.endswith("再见！\n")
 
 
-def test_cli_stopped_task_allows_next_question(monkeypatch, capsys):
+def test_cli_stopped_task_allows_next_question(
+    monkeypatch,
+    capsys,
+):
     inputs = iter(["坏任务", "下一题", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
@@ -304,15 +394,60 @@ def test_cli_stopped_task_allows_next_question(monkeypatch, capsys):
             reason = "tool_calls"
         else:
             message, reason = {"content": "恢复"}, "stop"
-        return httpx.Response(200, json={"choices": [{"message": message, "finish_reason": reason}]})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": message, "finish_reason": reason}]},
+        )
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
         "minicode.agent.request_model",
-        lambda messages, config, **kwargs: request_model(messages, config, use_tools=True, transport=transport),
+        lambda messages,
+        config,
+        **kwargs: request_model(
+            messages,
+            config,
+            use_tools=True,
+            transport=transport,
+        ),
     )
     main()
     assert payloads[1]["messages"][1:] == [{"role": "user", "content": "下一题"}]
     output = capsys.readouterr().out
     assert "任务未完成：连续工具失败达到上限" in output
     assert "MiniCode > 恢复" in output
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        ("completed", "成功后已移除这些本地旧历史"),
+        ("stopped", "本地旧历史仍保留"),
+    ],
+)
+def test_cli_reports_context_omissions(
+    monkeypatch,
+    capsys,
+    status,
+    expected,
+):
+    from minicode.agent import AgentResult
+
+    inputs = iter(["问题", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+    monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
+    monkeypatch.setattr(
+        "minicode.cli.run_agent",
+        lambda *args: AgentResult(
+            status,
+            "结果",
+            1,
+            0,
+            2,
+        ),
+    )
+    main()
+    output = capsys.readouterr().out
+    assert "消息和工具说明最多 128 KiB" in output
+    assert "请求省略了 2 轮较早对话" in output
+    assert expected in output and "MiniCode > 结果" in output

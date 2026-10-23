@@ -44,3 +44,31 @@ def test_clear_and_new_sessions_start_empty():
     session.clear()
     session.clear()
     assert session.messages_for("新问题") == [{"role": "user", "content": "新问题"}]
+
+
+def test_successful_record_can_remove_old_turns_atomically():
+    session = Session()
+    session.record_turn("旧", "回答")
+    session.record_turn("较新", "回答")
+    new = [{"role": "user", "content": "当前"}, {"role": "assistant", "content": "完成"}]
+    session.record_messages(new, discard_oldest_turns=1)
+    new[0]["content"] = "外部修改"
+    assert session.history_turns() == [
+        [{"role": "user", "content": "较新"}, {"role": "assistant", "content": "回答"}],
+        [{"role": "user", "content": "当前"}, {"role": "assistant", "content": "完成"}],
+    ]
+    copy = session.history_turns()
+    copy[0].clear()
+    assert len(session.history_turns()[0]) == 2
+
+
+def test_invalid_discard_does_not_mutate_session():
+    import pytest
+
+    session = Session()
+    session.record_turn("旧", "回答")
+    before = session.history_turns()
+    for count in (-1, True, 1.5, 2):
+        with pytest.raises(ValueError):
+            session.record_messages([], discard_oldest_turns=count)
+        assert session.history_turns() == before
