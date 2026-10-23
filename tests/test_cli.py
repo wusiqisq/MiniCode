@@ -431,6 +431,7 @@ def test_cli_reports_context_omissions(
     status,
     expected,
 ):
+    """终端替身验证上下文省略提示；允许新增确认关键字，按任务状态区分历史处理。"""
     from minicode.agent import AgentResult
 
     inputs = iter(["问题", "/exit"])
@@ -438,7 +439,7 @@ def test_cli_reports_context_omissions(
     monkeypatch.setattr("minicode.cli.load_config", lambda: Config(api_key="test-key"))
     monkeypatch.setattr(
         "minicode.cli.run_agent",
-        lambda *args: AgentResult(
+        lambda *args, **kwargs: AgentResult(
             status,
             "结果",
             1,

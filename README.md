@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-已完成第七阶段项目搜索与上下文限制：终端通过 DeepSeek API 进行多轮对话，模型可以请求搜索、读取启动目录内的文件，程序校验并执行，再把结果交给模型继续回答。支持 `/clear` 清空历史，以及 `/exit`、EOF 或 Ctrl+C 退出。
+已完成第八阶段模型编辑接入：终端通过 DeepSeek API 进行多轮对话，模型可以请求搜索、读取及经确认修改启动目录内的文件，程序校验并执行，再把结果交给模型继续回答。支持 `/clear` 清空历史，以及 `/exit`、EOF 或 Ctrl+C 退出。
 
-成功整轮的问题、工具请求、工具结果和最终回答保存在本次运行的内存中，退出后不恢复。失败或达到限制时丢弃当前轮，保留此前成功历史。已通过离线模拟测试；助手未使用真实密钥进行 API 验证。搜索及按整轮裁剪旧历史的上下文限制已实现；编辑和命令工具尚未实现。
+成功整轮保存在本次运行内存中；发生实际写入、写入结果不确定或用户拒绝的停止轮次，也保留完整工具结果和程序停止说明。纯只读失败仍丢弃当前轮，退出不恢复。已通过离线模拟测试；助手未使用真实密钥进行 API 验证。搜索及按整轮裁剪旧历史的上下文限制已实现；已提供 Python 修改预览与逐次确认写入接口；主 CLI 已接入逐次确认编辑，命令执行尚未实现。
 
 ## 安装与运行
 
@@ -53,7 +53,7 @@ DEEPSEEK_TIMEOUT=60
 python -m minicode
 ```
 
-启动时会显示项目根目录和数据发送提示。普通输入会连同上下文限制内保留的成功问答、工具请求和工具结果（包括读取的文件内容和搜索片段）发送到配置的模型服务，并可能产生 API 费用。请仅在可信项目中使用；敏感路径排除不能识别所有秘密。缺少密钥、网络错误、超时、认证失败、余额不足、限流或服务错误会显示简短提示，然后继续等待输入；不自动重试，不输出原始错误响应或密钥。响应格式异常、空回答或未完整结束也会明确报错。失败的问题不会加入历史，之前成功的问答仍然保留。错误码说明见 [DeepSeek 官方文档](https://api-docs.deepseek.com/quick_start/error_codes/)。
+启动时会显示项目根目录和数据发送提示。普通输入会连同上下文限制内保留的问答、程序交接、工具请求和工具结果（包括读取的文件内容和搜索片段）发送到配置的模型服务，并可能产生 API 费用。请仅在可信项目中使用；敏感路径排除不能识别所有秘密。缺少密钥、网络错误、超时、认证失败、余额不足、限流或服务错误会显示简短提示，然后继续等待输入；不自动重试，不输出原始错误响应或密钥。响应格式异常、空回答或未完整结束也会明确报错。纯只读失败不会加入历史；有写入影响或拒绝的停止会保留交接，之前的历史仍然保留。错误码说明见 [DeepSeek 官方文档](https://api-docs.deepseek.com/quick_start/error_codes/)。
 
 输入 `/exit` 退出，也可按 Ctrl+C 中断；Linux/macOS 下在空输入行按 Ctrl+D 可发送 EOF，表示输入结束。
 
@@ -113,7 +113,7 @@ result = dispatch_tool(
 print(result.tool_call_id, result.status, result.content)
 ```
 
-注册表允许 `read_file` 和 `search_project`。读取参数必须是 JSON 对象且只包含非空字符串 `relative_path`；搜索参数见下节。程序指定项目根目录，工具参数不能修改它。结果包含请求标识、`success/error` 状态和完整文件文本或错误提示；非法请求不会执行读取。请求标识必须是非空字符串，否则抛出 `ValueError`。这是 Python 调用接口，不会自动发送文件内容。
+注册表允许 `read_file`、`search_project` 和经确认的 `edit_file`。读取参数必须是 JSON 对象且只包含非空字符串 `relative_path`；搜索参数见下节。程序指定项目根目录，工具参数不能修改它。结果包含请求标识、`success/error/denied/skipped` 状态和内容。`denied` 表示未获授权，`skipped` 表示停止后的请求未继续执行；非法请求不执行文件操作。请求标识必须是非空字符串，否则抛出 `ValueError`。这是 Python 调用接口，不会自动发送文件内容。
 
 ## 受限项目搜索
 
@@ -155,7 +155,7 @@ CLI 调用 `run_agent(prompt, session, config, project_root)`。`request_model(.
 
 每轮默认最多请求模型 8 次、执行工具 16 次；连续 3 次工具错误即停止，工具成功重置失败计数。最后一次模型回复若仍要求工具，就停止而不读取；整批工具超过剩余预算时整批不执行。达到限制会显示“任务未完成”，不会当成成功回答。网络或协议错误立即停止，不自动重试；可以继续输入新问题。
 
-成功整轮才加入 Session；失败或停止不保存当前轮，保留下来的成功工具消息会随后续问题发送。`/clear` 可清空这些本地历史，不能撤回已经发送给服务的数据。次数限制按每个问题重新计数，不是 token、费用或总耗时上限；每次请求另外受上下文预算约束，长对话会按整轮裁剪旧历史，也可用 `/clear` 重置。没有磁盘日志或退出恢复。
+成功整轮加入 Session；纯只读失败不保存，有写入影响或拒绝的停止保留工具与程序交接，保留下来的消息会随后续问题发送。`/clear` 可清空这些本地历史，不能撤回已经发送给服务的数据。次数限制按每个问题重新计数，不是 token、费用或总耗时上限；每次请求另外受上下文预算约束，长对话会按整轮裁剪旧历史，也可用 `/clear` 重置。没有磁盘日志或退出恢复。
 
 循环已用临时文件和模拟 HTTP 验证；真实模型服务的工具调用尚未验证。协议依据：[DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)。工具说明和 system 消息不能替代程序的参数与路径校验。
 
@@ -167,9 +167,95 @@ CLI 的 Agent Loop 在**每次调用模型前**检查上下文，默认上限为
 
 例如，旧问题 A、较新问题 B 和当前问题 C 一起超限时，先省略 A 的整轮。若工具执行后再次超限，再省略 B。若仅应用规则、工具说明和 C 的本轮消息就超限，程序在发出下一次请求前返回“任务未完成”，保留本地旧历史；已完成的读取不代表文件内容已成功发给模型。可缩短问题，或先在更小目录内搜索，减少本轮需要读取的内容。`/clear` 只能清空旧历史，不能解决当前轮本身过大的问题。
 
-只有获得最终回答后，Session 才会同时移除本轮已省略的旧轮次并保存当前成功轮次；失败、达到限制或中断都不修改原历史。CLI 会报告省略轮次数。最终回答在请求结束后保存，因此本功能约束的是发送时的上下文，并非进程内存或 Session 保存字节的硬上限；下一轮请求会重新检查。
+获得最终回答后，Session 同时移除本轮已省略的旧轮次并保存当前成功轮次。纯只读失败、达到限制或中断不修改历史；有写入影响或用户拒绝的停止则补齐完整工具结果并保存程序交接，但不裁剪旧历史。CLI 会报告省略轮次数。最终回答在请求结束后保存，因此本功能约束的是发送时的上下文，并非进程内存或 Session 保存字节的硬上限；下一轮请求会重新检查。
 
 Python 调用 `run_agent(..., max_context_bytes=128 * 1024)` 可调整预算，只接受正整数；CLI 使用默认值，本次未增加 `.env` 配置。直接调用底层 `request_model()` / `ask_model()` 不自动裁剪，调用者需自行管理上下文。本阶段不引入 tokenizer、摘要压缩或真实模型请求。
+
+## 文件修改预览（Python 接口）
+
+`preview_edit()` 本身仅生成单文件修改预览；CLI 和模型现已通过下面的 edit_file 流程接入确认写入。例如可以预览给会话初始化增加一条注释：
+
+```python
+from minicode.tools.edit import EditPreviewError, preview_edit
+
+try:
+    preview = preview_edit(
+        project_root="/home/wusiqi/my-project/MiniCode",
+        relative_path="src/minicode/session.py",
+        old_text="self._turns: list[list[dict]] = []",
+        new_text="self._turns: list[list[dict]] = []  # 按成功轮次保存历史",
+    )
+    print(preview.diff)
+except EditPreviewError as error:
+    print(error)
+```
+
+`preview_edit()` 依次检查文本参数、受限读取原文件、唯一定位原文本、在内存中替换并生成统一差异。返回只读的 `EditPreview` 数据对象：`relative_path` 是请求路径，`original_content` 和 `updated_content` 是完整修改前后文本，`diff` 是带行号和上下文的差异。快照还绑定解析后的项目和目标路径，以及文件身份、大小、时间、权限等状态。`-` 行表示原内容，`+` 行表示建议新增的内容；路径标签用 JSON 引号转义，没有末尾换行时明确标记。
+
+匹配区分大小写、空白和换行，支持跨行文本，不使用正则表达式。`old_text` 不能为空，且必须恰好匹配一处，重叠匹配也算多处；`new_text` 可以为空，表示删除这段内容，不代表删除文件。未找到、多处匹配、原文与替换文本相同，都明确失败。
+
+沿用受限读取的项目边界、敏感路径、普通 UTF-8 文本及 64 KiB 限制，项目内符号链接可以只读预览；替换参数各至多 64 KiB，修改后文件也至多 64 KiB。完整差异最多 128 KiB，超限直接报错，不截断。例如接近文件上限的单行即使只改一个字符，差异也可能因为同时包含旧新两行而超限。
+
+此接口不创建或写入文件、不发送网络请求、不更新会话，也不注册为模型工具。预览只是读取时的快照，不能作为用户授权或未来无冲突的证明；写入必须经下面的 `apply_edit()` 重新校验路径、展示差异、逐次确认并检查外部修改。暂不支持创建文件、多文件修改或批量替换。
+
+## 确认与安全写入（Python 接口）
+
+`apply_edit(project_root, preview, confirm=confirm_edit)` 串联确认与写入。这里传入的是**确认函数**，不是模型提供的 `confirmed=true`：`apply_edit()` 决定何时请求授权，`permissions.confirm_edit()` 负责展示项目根目录、文件相对路径和完整差异，再等待终端用户回答。
+
+下面示例只操作自动清理的临时目录，可以独立试验拒绝和批准：
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from minicode.permissions import confirm_edit
+from minicode.tools.edit import EditApplyError, EditPreviewError, apply_edit, preview_edit
+
+with TemporaryDirectory() as directory:
+    root = Path(directory)
+    path = root / "demo.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    try:
+        preview = preview_edit(
+            root,
+            "demo.py",
+            "value = 1",
+            "value = 2",
+        )
+        result = apply_edit(
+            root,
+            preview,
+            confirm=confirm_edit,
+        )
+        print(result.message)
+        print(path.read_text(encoding="utf-8"))
+    except (EditPreviewError, EditApplyError) as error:
+        print(error)
+```
+
+只接受终端输入 `y` 或 `yes`（忽略大小写和两端空白）；空输入、EOF 或其他回答都拒绝，返回 `EditApplyResult(status="denied", ...)`，不创建临时文件。Ctrl+C 向外传递。每次调用重新询问，文件或模型输出中的“同意”只是数据。终端展示会转义 ESC、回车和双向格式字符等控制内容，实际写入文本保持原字节。
+
+程序先验证预览内容、重新生成差异，确保展示与实际建议写入一致；随后核对项目和目标路径、文件身份和原文。确认后再次检查，在同目录创建 `.minicode-edit-*` 临时文件，完整写入 UTF-8、保留普通权限位并同步，替换前再检查一次，最后用 `os.replace()` 替换目标。成功返回 `status="applied"`。普通准备或替换失败不会先截断原文件，并清理临时文件；若清理也失败，会明确报错提示检查目录。
+
+检测到外部修改、相同内容的文件被替换、权限变化或项目不一致时拒绝，通常抛出 `EditConflictError`（`EditApplyError` 的子类）；目标消失等路径/读写错误也抛出 `EditApplyError`。需要重新生成预览并重新确认，不能复用成功写入后的旧预览。所有错误提示都不包含文件正文或底层系统错误详情。
+
+写入只支持已有、可写的普通单文件；拒绝相对路径中的 `..`、任意相对路径段的符号链接、多个硬链接和特殊权限位。只读预览仍允许项目内符号链接。空的新内容会保留一个空文件，不删除文件。初版不保留属主、ACL 或扩展属性，不保证崩溃后目录项已经持久化；最后检查和替换之间仍有竞争窗口，因此只面向受监督的可信项目，不是安全沙箱。
+
+独立调用 `apply_edit()` 不更新 Session；主 CLI 的模型编辑工具已接入下面的记录与交接策略。
+
+## 模型编辑与停止交接
+
+在项目根目录执行 `python -m minicode` 后，可提出：“读取某个非敏感源码文件，把其中唯一的一段原文本改成新文本；先展示差异，等我确认。”模型通过 `edit_file` 请求 `relative_path`、`old_text` 和 `new_text` 三个字符串。程序独立校验，生成快照和差异，再调用终端确认；模型不能设置 `confirmed`、项目根目录或确认函数。
+
+每次编辑都重新询问，批准只对当前预览有效。工具 `success` 仅在写入接口返回 applied 后产生；拒绝是 `denied`，冲突/非法参数/写入失败是 `error`。程序使用内部 `changed_path` 记录实际成功写入，不以模型的口头回答为证据。没有应用确认接口时编辑默认拒绝。Python 使用 `run_agent(..., edit_confirm=confirm_edit)` 接入确认，底层 `dispatch_tool(..., edit_confirm=...)` 同样需要应用显式提供。
+
+**拒绝立即停止本轮**，不再请求模型，也不执行整批中的剩余工具；剩余结果补为 `skipped`。再次编辑需要用户开启新的问题并重新确认。单个普通工具错误仍可回传模型纠正，但不能绕过用户拒绝。
+
+文件写入后，模型续问仍可能失败或达到限制。此时程序保留实际完成的工具结果，为未完成的请求补齐结果，并追加以 `MiniCode 程序记录：` 开头的本地停止说明；它是应用交接，不是模型生成的最终回答。此前旧历史不裁剪，下一轮可继续看到完整请求/结果配对。CLI 会说明已写入的路径以及“修改不会自动回滚”。单独使用 `dispatch_tool_calls()` 时只返回结果列表、不管理会话，调用方负责交接；它也会在拒绝后跳过余下整批。
+
+批准后若在编辑调用内部 Ctrl+C，不能可靠区分中断发生在替换前还是替换后：程序保守保存 `error` 结果并提示“写入结果未确认，请重新读取检查”，不声称没有写入。如果已明确获得 applied，之后模型请求才中断，则按已知写入交接。`AgentInterrupted` 仍是 `KeyboardInterrupt`，CLI 打印交接后退出。确认之前中断且无此前写入影响时，沿用原有不保存当前轮的行为。
+
+这些记录只在进程内存中；`/clear`、成功后的历史裁剪、退出或崩溃可能移除本地记录，都不会撤回已写入文件或模型服务已收到的数据。没有磁盘审计日志、自动回滚、自动重试、文件删除或命令执行。本阶段使用模拟 HTTP 配合临时文件验证了实际编辑，真实服务的 edit_file 请求仍需用非敏感文件单独验证。
 
 ## 测试
 
@@ -188,14 +274,16 @@ python -m pytest
 - `pyproject.toml`：包配置、Python 版本要求和测试依赖。
 - `src/minicode/__main__.py`：模块启动入口，调用 `cli.main()`。
 - `src/minicode/cli.py`：输入循环，展示数据发送提示和项目根目录，协调配置、会话和 Agent Loop，处理清空与退出。
-- `src/minicode/agent.py`：连接模型和工具，执行每轮停止限制，返回完成或停止结果。
-- `src/minicode/session.py`：按成功轮次分组并深拷贝消息，成功时提交历史裁剪和当前轮，清空历史。
+- `src/minicode/agent.py`：连接模型、工具及应用确认，执行停止限制，保留写入影响或拒绝的交接。
+- `src/minicode/session.py`：按完整轮次保存问答/工具与停止交接，深拷贝消息，提交裁剪或清空历史。
 - `src/minicode/context.py`：计量消息及工具说明的 JSON 字节，选择完整历史轮次，拒绝当前轮超限。
 - `src/minicode/config.py`：读取并校验配置，配置对象的文本表示隐藏密钥。
 - `src/minicode/llm.py`：发送消息列表，解析文本或工具请求、转换错误提示，不执行工具或保存历史。
 - `src/minicode/models.py`：模型回复与工具请求数据类，生成 assistant 消息。
 - `src/minicode/tools/files.py`：校验读取范围、敏感路径及大小，返回 UTF-8 文本或 `FileReadError`。
 - `src/minicode/tools/search.py`：受限目录遍历和字面搜索，返回匹配行、跳过数及截断标记。
+- `src/minicode/tools/edit.py`：唯一文本替换预览、文件快照、授权后冲突检查和临时文件替换。
+- `src/minicode/permissions.py`：安全展示差异，逐次收集终端确认，不执行写入。
 - `src/minicode/tools/registry.py`：注册及描述工具，校验并顺序分发请求，将结果转换为带编号的 tool 消息。
 - `.env.example`：不含密钥的配置模板。
 - `tests/`：配置、HTTP 请求响应、交互和模块入口的离线测试。

@@ -37,17 +37,16 @@ def _check_sensitive(path: Path) -> None:
             raise FileReadError("拒绝读取默认排除的敏感路径。")
 
 
-def read_file(
+def _resolve_file_path(
     project_root: str | Path,
     relative_path: str,
-) -> str:
-    """在指定项目根目录内读取一个完整的小型 UTF-8 文本文件。
+) -> tuple[Path, Path]:
+    """校验项目内已有普通文件的路径，供读取和编辑共同使用。
 
-    输入：project_root 是已存在的项目根目录；relative_path 是相对文件路径。
-    输出：保留原始空白和换行的完整字符串；空文件返回空字符串。
-    异常：越界、敏感路径、非普通文件、超过 64 KiB、读取或编码失败时，
-        统一抛出可展示的 FileReadError，不返回部分内容。
-    只读取磁盘，不修改文件或发送网络请求；不能防御并发恶意路径替换。
+    输入：project_root 是已有项目目录，relative_path 是非空相对文件路径。
+    输出：(root, target)，分别是解析后的项目根目录与文件绝对路径。
+    异常：越界、敏感、缺失或非普通文件等情况抛出 FileReadError。
+    只校验当前路径状态；不打开文件，不防御并发恶意替换。
     """
     if not isinstance(relative_path, str) or not relative_path.strip() or "\x00" in relative_path:
         raise FileReadError("文件路径必须是非空的相对路径，且不能包含空字符。")
@@ -67,6 +66,29 @@ def read_file(
         if not target.is_file():
             raise FileReadError("只能读取普通文件，不能读取目录或特殊文件。")
 
+        return root, target
+    except FileReadError:
+        raise
+    except FileNotFoundError:
+        raise FileReadError("项目根目录或文件不存在，或符号链接目标不存在。") from None
+    except (OSError, RuntimeError, ValueError):
+        raise FileReadError("无法读取文件，请检查路径、权限和符号链接。") from None
+
+
+def read_file(
+    project_root: str | Path,
+    relative_path: str,
+) -> str:
+    """在指定项目根目录内读取一个完整的小型 UTF-8 文本文件。
+
+    输入：project_root 是已存在的项目根目录；relative_path 是相对文件路径。
+    输出：保留原始空白和换行的完整字符串；空文件返回空字符串。
+    异常：越界、敏感路径、非普通文件、超过 64 KiB、读取或编码失败时，
+        统一抛出可展示的 FileReadError，不返回部分内容。
+    只读取磁盘，不修改文件或发送网络请求；不能防御并发恶意路径替换。
+    """
+    root, target = _resolve_file_path(project_root, relative_path)
+    try:
         # 非阻塞打开避免文件被替换成 FIFO 后无限等待；拒绝最终路径的新符号链接。
         flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
         with os.fdopen(os.open(target, flags), "rb") as source:

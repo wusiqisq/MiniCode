@@ -278,6 +278,7 @@ def test_nested_session_data_is_independent():
 
 
 def test_search_then_read_round_trip(tmp_path):
+    """临时文件与模拟 HTTP 验证搜索后读取；新增编辑工具说明不能影响原只读链路。"""
     (tmp_path / "a.txt").write_text("目标内容")
     search_call = ToolCall(
         "search",
@@ -295,7 +296,7 @@ def test_search_then_read_round_trip(tmp_path):
     )
     assert result.status == "completed" and result.tool_calls == 2
     names = {t["function"]["name"] for t in payloads[0]["tools"]}
-    assert names == {"read_file", "search_project"}
+    assert names == {"read_file", "search_project", "edit_file"}
     search_result = json.loads(payloads[1]["messages"][-1]["content"])
     assert search_result["status"] == "success"
     assert json.loads(search_result["content"])["matches"][0] == {

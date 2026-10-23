@@ -41,7 +41,7 @@ def select_context(
 
     输入：
         system_prompt：应用规则文本，放在请求的第一条 system 消息中。
-        history_turns：按成功轮次分组的旧历史，每个元素是一轮消息列表。
+        history_turns：按完整轮次分组的旧历史（包括停止交接），每项是一轮消息列表。
         current_turn：当前问题及本轮已产生的 assistant/tool 消息，必须完整保留。
         max_bytes：消息和工具说明的 JSON 字节上限，默认 128 KiB。
         history_omitted：本轮此前是否已省略旧历史；只能使用参数名传入。
