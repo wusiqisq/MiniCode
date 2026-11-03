@@ -3,6 +3,7 @@
 import json
 import unicodedata
 
+from minicode.tools.command import CommandRequest
 from minicode.tools.edit import EditPreview
 
 
@@ -35,6 +36,25 @@ def confirm_edit(preview: EditPreview) -> bool:
     print(_display_text(preview.diff))
     try:
         answer = input("是否写入以上修改？[y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().casefold() in {"y", "yes"}
+
+
+def confirm_command(request: CommandRequest) -> bool:
+    """展示实际命令、目录、超时和副作用说明，读取当前用户的一次授权。
+
+    输入为程序校验后的不可变请求，输出仅在 y/yes 时为 True。
+    无确认继承；EOF 拒绝，Ctrl+C 传播。控制字符转义，参数以 JSON 列表显示。
+    本函数只做终端交互，不执行命令，也不将输出内容当作授权。
+    """
+    print(f"项目根目录：{_display_text(json.dumps(str(request.project_root), ensure_ascii=False))}")
+    print(f"工作目录：{_display_text(json.dumps(str(request.cwd), ensure_ascii=False))}")
+    print(f"命令参数：{_display_text(json.dumps(request.argv, ensure_ascii=False))}")
+    print(f"超时：{request.timeout_seconds} 秒；输出合计最多保留 32 KiB。")
+    print("此命令可修改文件、访问项目外路径或网络；工作目录和 shell=False 不构成沙箱。")
+    try:
+        answer = input("是否执行以上命令？[y/N] ")
     except EOFError:
         return False
     return answer.strip().casefold() in {"y", "yes"}

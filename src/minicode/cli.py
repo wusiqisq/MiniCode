@@ -6,7 +6,7 @@ from pathlib import Path
 from minicode.agent import AgentInterrupted, run_agent
 from minicode.config import ConfigError, load_config
 from minicode.session import Session
-from minicode.permissions import confirm_edit, _display_text
+from minicode.permissions import confirm_command, confirm_edit, _display_text
 
 
 def main() -> None:
@@ -14,7 +14,7 @@ def main() -> None:
 
     输入：无函数参数；从标准输入读取问题，使用启动目录作为项目根目录。
     输出：无返回值；向终端展示数据提示、模型结果、限制和错误信息。
-    副作用：普通问题会加载配置并调用模型，编辑须逐次确认；/clear 只清空历史、不撤销文件。
+    副作用：加载配置并调用模型，编辑和命令须逐次确认；/clear 只清历史、不撤销副作用。
     退出命令、EOF 或 Ctrl+C 结束程序；配置错误展示后允许继续输入。
     """
     print("欢迎使用 MiniCode。")
@@ -25,6 +25,9 @@ def main() -> None:
     print("编辑请求、替换文本和处理结果也会作为历史发送到配置的模型服务；停止不等于撤销已完成的写入。")
     print("仅对可信项目使用；默认敏感路径排除不能识别所有秘密。历史仅保存在本次运行内存中。")
     print("编辑会先展示差异并逐次确认，默认拒绝；已写入的修改不会因停止或清空历史自动撤销。")
+    print("命令参数、标准输出和标准错误将发送到模型服务；不要在参数中放密钥。")
+    print("命令先展示参数、工作目录和超时并逐次确认，默认拒绝；shell=False 和工作目录不是沙箱。")
+    print("命令可能修改文件或访问网络，失败、超时、停止及清空历史都不会撤销其副作用。")
     print("每轮限制：模型 8 次、工具 16 次、连续工具失败 3 次；达到限制表示任务未完成。")
     print("上下文限制：每次消息和工具说明最多 128 KiB；超限按整轮裁剪旧历史，本轮仍超限则停止。")
     session = Session()
@@ -50,12 +53,16 @@ def main() -> None:
                 config,
                 project_root,
                 edit_confirm=confirm_edit,
+                command_confirm=confirm_command,
             )
             if result.omitted_history_turns:
                 action = "成功后已移除这些本地旧历史。" if result.status == "completed" else "未完成，本地旧历史仍保留。"
                 print(f"MiniCode > 上下文限制：请求省略了 {result.omitted_history_turns} 轮较早对话；{action}")
             if result.status == "completed" and result.written_paths:
                 print(f"MiniCode > 已确认写入：{_display_text(json.dumps(result.written_paths, ensure_ascii=False))}")
+            if result.status == "completed" and result.commands:
+                records = json.dumps([record.as_dict() for record in result.commands], ensure_ascii=False)
+                print(f"MiniCode > 命令交接：{_display_text(records)}；请根据退出码判断执行结果。")
             print(f"MiniCode > {result.message}")
         except ConfigError as error:
             print(f"MiniCode > {error}")

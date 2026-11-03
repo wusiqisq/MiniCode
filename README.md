@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-已完成第八阶段模型编辑接入：终端通过 DeepSeek API 进行多轮对话，模型可以请求搜索、读取及经确认修改启动目录内的文件，程序校验并执行，再把结果交给模型继续回答。支持 `/clear` 清空历史，以及 `/exit`、EOF 或 Ctrl+C 退出。
+已完成第九阶段命令工具接入与离线验证：终端通过 DeepSeek API 进行多轮对话，模型可以请求搜索、读取、经确认修改文件及运行命令，程序校验并执行，再把结果交给模型继续回答。支持 `/clear` 清空历史，以及 `/exit`、EOF 或 Ctrl+C 退出。
 
-成功整轮保存在本次运行内存中；发生实际写入、写入结果不确定或用户拒绝的停止轮次，也保留完整工具结果和程序停止说明。纯只读失败仍丢弃当前轮，退出不恢复。已通过离线模拟测试；助手未使用真实密钥进行 API 验证。搜索及按整轮裁剪旧历史的上下文限制已实现；已提供 Python 修改预览与逐次确认写入接口；主 CLI 已接入逐次确认编辑，命令执行尚未实现。
+成功整轮保存在本次运行内存中；发生实际写入、命令执行、批准后结果未确认或用户拒绝的停止轮次，也保留完整工具结果和程序停止说明。纯只读失败仍丢弃当前轮，退出不恢复。已通过离线模拟测试；助手未使用真实密钥进行 API 验证。搜索及按整轮裁剪旧历史的上下文限制已实现；已提供 Python 修改预览与逐次确认写入接口；主 CLI 已接入逐次确认编辑及命令执行，命令当前仅支持 POSIX，已在 Linux 验证。
 
 ## 安装与运行
 
@@ -255,7 +255,46 @@ with TemporaryDirectory() as directory:
 
 批准后若在编辑调用内部 Ctrl+C，不能可靠区分中断发生在替换前还是替换后：程序保守保存 `error` 结果并提示“写入结果未确认，请重新读取检查”，不声称没有写入。如果已明确获得 applied，之后模型请求才中断，则按已知写入交接。`AgentInterrupted` 仍是 `KeyboardInterrupt`，CLI 打印交接后退出。确认之前中断且无此前写入影响时，沿用原有不保存当前轮的行为。
 
-这些记录只在进程内存中；`/clear`、成功后的历史裁剪、退出或崩溃可能移除本地记录，都不会撤回已写入文件或模型服务已收到的数据。没有磁盘审计日志、自动回滚、自动重试、文件删除或命令执行。本阶段使用模拟 HTTP 配合临时文件验证了实际编辑，真实服务的 edit_file 请求仍需用非敏感文件单独验证。
+这些记录只在进程内存中；`/clear`、成功后的历史裁剪、退出或崩溃可能移除本地记录，都不会撤回已写入文件或模型服务已收到的数据。没有磁盘审计日志、自动回滚、自动重试或文件删除；模型命令接入及交接见下一节。本阶段使用模拟 HTTP 配合临时文件验证了实际编辑，真实服务的 edit_file 请求仍需用非敏感文件单独验证。
+
+## 经确认的命令执行（模型与 Python 接口）
+
+模型工具 `run_command(argv, relative_cwd=".", timeout_seconds=30)` 已接入 Agent Loop；主 CLI 传入 `confirm_command`，执行前逐次询问。程序仍独立校验模型参数，不接受模型传入 confirmed、project_root 或其他额外字段。当前仅支持 POSIX，已在 Linux 验证。底层 Python 接口如下：
+
+```python
+import sys
+from pathlib import Path
+
+from minicode.permissions import confirm_command
+from minicode.tools.command import run_command
+
+result = run_command(
+    Path.cwd(),
+    [sys.executable, "-c", "print('hello MiniCode')"],
+    relative_cwd=".",
+    timeout_seconds=30,
+    confirm=confirm_command,
+)
+print(result.status, result.returncode)
+print(result.stdout)
+print(result.stderr)
+```
+
+输入经过校验后转换成不可变的 `CommandRequest`，展示解析后的工作目录、JSON 参数列表和超时。只有当次输入 y/yes 才执行；无回调、空输入或 EOF 均拒绝。应用自定义回调必须严格返回 `True`。参数列表最多 128 项、合计 16 KiB UTF-8；工作目录必须在项目内，拒绝 `..`、绝对路径及默认敏感路径，确认后再次检查目录解析结果。
+
+使用 `Popen(shell=False)`，不解析管道、重定向或通配符；stdin 关闭，运行非交互命令。超时默认 30 秒，可指定 1–120 的整数秒。双流并行收集，合计保留前 32 KiB 原始字节，超限仍排空管道防止死锁；`output_truncated` 标记丢弃。UTF-8 无效或被截断的字符替换为 `�`，因此解码后重新编码的字节数可能略大于原始保留量。
+
+`status` 为 `denied`、`exited` 或 `timed_out`；`exited` 只代表进程退出，需结合 `returncode == 0` 判断命令是否成功。拒绝时退出码为 `None`。超时强制终止进程组并回收直接子进程，返回截至截止时已收集的输出；中断和收集错误也清理进程组。正常结束也清理仍留在同组的后代。不自动重试。参数、目录和启动等错误抛出 `CommandError`；Ctrl+C 清理后继续向外传播。
+
+命令继承当前环境，可能修改文件、读取项目外路径或访问网络；不能在参数中放密钥。目录校验只约束启动工作目录，不能限制命令参数及程序行为。`shell=False` 不构成沙箱，也不阻止显式运行解释器或 shell。进程组不能捕获主动另建会话逃离的后代；目录检查仍有并发替换窗口。只用于用户监督下的可信项目。超时、中断或失败不撤销命令副作用。直接调用底层接口的应用自行处理交接；Agent Loop 的策略如下。
+
+`ToolResult` 只有在正常退出且退出码为 0 时返回 success，非零退出、超时或收集失败为 error，拒绝为 denied。输出回传包括实际 argv、工作目录、超时、outcome、returncode、stdout、stderr 和 output_truncated；这部分数据可能发给模型。普通错误仍可由模型继续分析，但下一条命令必须重新获得授权。命令拒绝立即停止本轮，不续问模型，剩余批次补 skipped。
+
+`CommandRecord` 是程序生成的内部交接，`AgentResult.commands` 返回本轮有执行影响的命令；不会推断命令究竟修改了哪些文件。正常退出为 exited，超时为 timed_out，启动后收集失败或批准后中断而未取得明确结果为 unknown。批准前中断与明确启动失败不记录为已执行；批准后在启动窗口中断则保守报告 unknown，不能断言没有执行。
+
+已有命令记录后，即使遇模型网络/协议错误、上下文或次数限制、中断，仍保存整轮工具协议及程序停止说明，此前历史不裁剪。中断补齐当前请求的 error 和剩余请求的 skipped，CLI 展示交接后退出。成功轮次按原规则提交历史裁剪；CLI 另行展示程序生成的命令结果，模型最终回答不等同于命令或测试成功。记录仅在内存，clear/裁剪/退出可能移除记录，不撤销副作用。
+
+可以在可信的小型示例项目中启动 `python -m minicode`，输入“请运行 Python 打印 hello，不修改文件”。先检查模型提出的实际参数、目录和超时，再选择 y/yes 或拒绝。模型请求和最终表述不确定；本阶段验收使用模拟模型和真实临时目录子进程，未请求真实 API。完整的测试失败后有限修复场景留给第十阶段。
 
 ## 测试
 
@@ -274,7 +313,7 @@ python -m pytest
 - `pyproject.toml`：包配置、Python 版本要求和测试依赖。
 - `src/minicode/__main__.py`：模块启动入口，调用 `cli.main()`。
 - `src/minicode/cli.py`：输入循环，展示数据发送提示和项目根目录，协调配置、会话和 Agent Loop，处理清空与退出。
-- `src/minicode/agent.py`：连接模型、工具及应用确认，执行停止限制，保留写入影响或拒绝的交接。
+- `src/minicode/agent.py`：连接模型、工具及应用确认，执行停止限制，保留文件、命令副作用或拒绝的交接。
 - `src/minicode/session.py`：按完整轮次保存问答/工具与停止交接，深拷贝消息，提交裁剪或清空历史。
 - `src/minicode/context.py`：计量消息及工具说明的 JSON 字节，选择完整历史轮次，拒绝当前轮超限。
 - `src/minicode/config.py`：读取并校验配置，配置对象的文本表示隐藏密钥。
@@ -283,7 +322,8 @@ python -m pytest
 - `src/minicode/tools/files.py`：校验读取范围、敏感路径及大小，返回 UTF-8 文本或 `FileReadError`。
 - `src/minicode/tools/search.py`：受限目录遍历和字面搜索，返回匹配行、跳过数及截断标记。
 - `src/minicode/tools/edit.py`：唯一文本替换预览、文件快照、授权后冲突检查和临时文件替换。
-- `src/minicode/permissions.py`：安全展示差异，逐次收集终端确认，不执行写入。
+- `src/minicode/tools/command.py`：命令请求和执行交接、参数/目录校验、进程组清理及有界双流收集。
+- `src/minicode/permissions.py`：安全展示编辑差异或命令参数，逐次收集终端确认，不直接执行操作。
 - `src/minicode/tools/registry.py`：注册及描述工具，校验并顺序分发请求，将结果转换为带编号的 tool 消息。
 - `.env.example`：不含密钥的配置模板。
 - `tests/`：配置、HTTP 请求响应、交互和模块入口的离线测试。

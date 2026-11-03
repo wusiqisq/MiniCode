@@ -274,9 +274,9 @@ def test_filename_newlines_are_escaped_in_diff_headers(tmp_path):
 
 
 def test_only_guarded_edit_is_exposed_as_model_tool():
-    """无需 fixture；模型只获得受确认保护的 edit_file，不能直接调用预览或 apply_edit。"""
+    """无需 fixture；模型只获得受确认保护的编辑/命令工具，不能直接调用预览或 apply_edit。"""
     names = {item["function"]["name"] for item in tool_definitions()}
-    assert names == {"read_file", "search_project", "edit_file"}
+    assert names == {"read_file", "search_project", "edit_file", "run_command"}
 
 
 def test_default_diff_budget_can_reject_a_valid_large_single_line(tmp_path):

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from minicode.models import ToolCall
+from minicode.tools.command import CommandError, CommandRecord, CommandRequest, run_command
 from minicode.tools.edit import EditApplyError, EditApplyResult, EditPreview, EditPreviewError, apply_edit, preview_edit
 from minicode.tools.files import FileReadError, read_file
 from minicode.tools.search import SearchError, search_project
@@ -20,11 +21,12 @@ class ToolResult:
     status: Literal["success", "error", "denied", "skipped"]
     content: str
     changed_path: str | None = None  # 应用内部记录实际写入，不接受模型设置。
+    command_record: CommandRecord | None = None  # 仅由执行层生成，不能从模型参数设置。
 
     def as_message(self) -> dict[str, str]:
         """将工具执行结果转换成可回传模型的一条 tool 消息。
 
-        输入：无额外参数；读取自身请求编号、success/error 状态和文本内容。
+        输入：无额外参数；读取自身请求编号、success/error/denied/skipped 状态和文本内容。
         输出：包含 role、tool_call_id 和 JSON 字符串 content 的新字典。
         把状态与内容一起编码，避免将错误误当文件文本；本方法不发网络请求。
         """
@@ -111,15 +113,88 @@ def _edit_file(
     )
 
 
+def _run_command(
+    project_root: str | Path,
+    arguments: dict,
+    *,
+    confirm: Callable[[CommandRequest], bool] | None,
+    tool_call_id: str,
+) -> ToolResult:
+    """校验模型命令字段，调用逐次授权执行接口并生成协议结果及内部交接。
+
+    输入为应用根目录、模型参数对象、可信确认回调和请求编号；模型不能注入授权。
+    返回 ToolResult；启动前错误交外层转换，启动后收集错误保留 unknown 记录。
+    非零退出和超时返回 error，拒绝返回 denied；中断向 Agent 传播，不自动重试。
+    """
+    if "argv" not in arguments or not set(arguments) <= {"argv", "relative_cwd", "timeout_seconds"}:
+        raise CommandError("run_command 需要 argv，仅允许可选 relative_cwd 和 timeout_seconds。")
+    approved = None
+
+    def decide(request: CommandRequest) -> bool:
+        """输入实际执行快照，调用应用授权并保留批准请求，返回严格布尔值。"""
+        nonlocal approved
+        allowed = confirm is not None and confirm(request) is True
+        if allowed:
+            approved = request
+        return allowed
+
+    try:
+        result = run_command(
+            project_root,
+            arguments["argv"],
+            relative_cwd=arguments.get("relative_cwd", "."),
+            timeout_seconds=arguments.get("timeout_seconds", 30),
+            confirm=decide,
+        )
+    except CommandError as error:
+        if not error.started:
+            raise
+        assert approved is not None
+        return ToolResult(
+            tool_call_id,
+            "error",
+            str(error),
+            command_record=CommandRecord(approved, "unknown"),
+        )
+    if result.status == "denied":
+        return ToolResult(
+            tool_call_id,
+            "denied",
+            "用户未确认或应用未提供确认接口，命令未执行。",
+        )
+    assert approved is not None
+    record = CommandRecord(
+        approved,
+        result.status,
+        result.returncode,
+    )
+    return ToolResult(
+        tool_call_id,
+        "success" if result.status == "exited" and result.returncode == 0 else "error",
+        json.dumps({
+            **record.as_dict(),
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "output_truncated": result.output_truncated,
+        }, ensure_ascii=False),
+        command_record=record,
+    )
+
+
 # 只有程序明确注册的函数可以执行；不使用 eval 或按名称动态导入。
-_HANDLERS = {"read_file": _read_file, "search_project": _search_project, "edit_file": _edit_file}
+_HANDLERS = {
+    "read_file": _read_file,
+    "search_project": _search_project,
+    "edit_file": _edit_file,
+    "run_command": _run_command,
+}
 
 
 def tool_definitions() -> list[dict]:
     """构造模型可见的工具说明和参数 JSON Schema。
 
     输入：无参数；工具说明由程序显式定义，模型不能添加可执行函数。
-    输出：新的工具说明列表，目前包含 read_file、search_project 和需确认的 edit_file。
+    输出：新的工具说明列表，包含读取、搜索、需确认的编辑和命令；返回数据不共享。
     每次构造独立的嵌套对象；Schema 只指导模型，不能替代程序参数校验。
     """
     return [{
@@ -178,6 +253,28 @@ def tool_definitions() -> list[dict]:
                 "additionalProperties": False,
             },
         },
+    }, {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": (
+                "在可信项目运行非交互命令，argv为参数列表，不解析shell语法。"
+                "程序展示命令、目录和超时并逐次确认，拒绝后不得绕过或重试。"
+                "默认30秒，最多120秒；双流合计保留32 KiB，检查退出码、超时及截断。"
+                "工作目录和shell=False不是沙箱；命令可能修改文件或访问网络。"
+                "不得把密钥放进参数，不得自主删除文件、提交或推送Git。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 128},
+                    "relative_cwd": {"type": "string", "description": "项目内相对工作目录，默认 ."},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+                },
+                "required": ["argv"],
+                "additionalProperties": False,
+            },
+        },
     }]
 
 
@@ -203,14 +300,15 @@ def dispatch_tool(
     arguments: str,
     *,
     edit_confirm: Callable[[EditPreview], bool] | None = None,
+    command_confirm: Callable[[CommandRequest], bool] | None = None,
 ) -> ToolResult:
     """校验并执行一个工具请求，把可预期的工具失败转换成结果。
 
     输入：project_root 由程序指定；tool_call_id 是对应模型请求的编号；
         name 是注册工具名；arguments 是模型返回的原始 JSON 参数字符串。
-    输出：ToolResult，携带相同请求编号、success/error 状态和文本内容。
+    输出：ToolResult，携带相同请求编号、执行状态和文本内容及内部副作用记录。
     异常：请求编号无效属于协议错误，抛出 ValueError；其他无效请求返回 error。
-    edit_confirm 是应用传入的用户确认函数；无确认接口时拒绝编辑。
+    edit_confirm/command_confirm 是应用传入的确认函数；无接口默认拒绝。
     模型不能更换根目录或传入授权；changed_path 仅在实际写入成功后由程序设置。
     """
     if not isinstance(tool_call_id, str) or not tool_call_id.strip():
@@ -242,6 +340,13 @@ def dispatch_tool(
             "工具参数必须是 JSON 对象。",
         )
     try:
+        if name == "run_command":
+            return _run_command(
+                project_root,
+                parsed,
+                confirm=command_confirm,
+                tool_call_id=tool_call_id,
+            )
         if name == "edit_file":
             applied = _edit_file(
                 project_root,
@@ -255,7 +360,7 @@ def dispatch_tool(
                 changed_path=parsed["relative_path"] if applied.status == "applied" else None,
             )
         content = _HANDLERS[name](project_root, parsed)
-    except (FileReadError, SearchError, EditPreviewError, EditApplyError) as error:
+    except (FileReadError, SearchError, EditPreviewError, EditApplyError, CommandError) as error:
         return ToolResult(
             tool_call_id,
             "error",
@@ -273,10 +378,11 @@ def dispatch_tool_calls(
     calls: tuple[ToolCall, ...],
     *,
     edit_confirm: Callable[[EditPreview], bool] | None = None,
+    command_confirm: Callable[[CommandRequest], bool] | None = None,
 ) -> list[ToolResult]:
     """顺序执行一批请求；普通错误继续，用户拒绝则跳过剩余整批。
 
-    输入：项目根目录、已解析的 ToolCall 元组和可选应用确认函数。
+    输入：项目根目录、ToolCall 元组及编辑/命令的应用确认函数；缺失默认拒绝。
     输出：按请求顺序返回结果；拒绝后的请求为 skipped，不再执行。
     中断向外传播；本辅助接口不保存会话或实现 Agent Loop 的次数限制。
     """
@@ -296,6 +402,7 @@ def dispatch_tool_calls(
                 call.name,
                 call.arguments,
                 edit_confirm=edit_confirm,
+                command_confirm=command_confirm,
             )
         results.append(result)
         denied = denied or result.status == "denied"

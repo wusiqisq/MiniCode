@@ -278,7 +278,7 @@ def test_nested_session_data_is_independent():
 
 
 def test_search_then_read_round_trip(tmp_path):
-    """临时文件与模拟 HTTP 验证搜索后读取；新增编辑工具说明不能影响原只读链路。"""
+    """临时文件与模拟 HTTP 验证搜索后读取；新增命令工具说明不能影响原只读链路。"""
     (tmp_path / "a.txt").write_text("目标内容")
     search_call = ToolCall(
         "search",
@@ -296,7 +296,7 @@ def test_search_then_read_round_trip(tmp_path):
     )
     assert result.status == "completed" and result.tool_calls == 2
     names = {t["function"]["name"] for t in payloads[0]["tools"]}
-    assert names == {"read_file", "search_project", "edit_file"}
+    assert names == {"read_file", "search_project", "edit_file", "run_command"}
     search_result = json.loads(payloads[1]["messages"][-1]["content"])
     assert search_result["status"] == "success"
     assert json.loads(search_result["content"])["matches"][0] == {
@@ -410,17 +410,22 @@ def test_large_tool_results_stop_before_next_http_request(tmp_path):
 
 
 def test_history_can_be_trimmed_after_tool_execution_without_orphan_messages(tmp_path):
+    """临时文件和模拟请求验证工具执行后裁剪整轮；预算随工具说明大小计算。"""
     from minicode.context import context_bytes
 
     (tmp_path / "a.txt").write_text("中" * 1500)
     session = Session()
     session.record_turn("旧" * 1500, "旧回答")
+    budget = context_bytes([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *session.messages_for("查看项目"),
+    ]) + 1000
     # 首次请求能容纳历史；工具结果返回后必须移除该完整旧轮次。
     result, _, payloads = execute(
         tmp_path,
         [completion([read_call()]), completion()],
         session=session,
-        max_context_bytes=8000,
+        max_context_bytes=budget,
     )
     assert result.status == "completed" and result.omitted_history_turns == 1
     assert "旧回答" in str(payloads[0]["messages"])
@@ -428,7 +433,7 @@ def test_history_can_be_trimmed_after_tool_execution_without_orphan_messages(tmp
     assert [m["role"] for m in payloads[1]["messages"]] == ["system", "user", "assistant", "tool"]
     assert payloads[1]["messages"][-1]["tool_call_id"] == "one"
     assert len(session.history_turns()) == 1
-    assert all(context_bytes(p["messages"]) <= 8000 for p in payloads)
+    assert all(context_bytes(p["messages"]) <= budget for p in payloads)
 
 
 def test_invalid_context_limit(tmp_path):
