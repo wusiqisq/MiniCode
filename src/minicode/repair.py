@@ -23,6 +23,12 @@ from minicode.tools.edit import EditPreview
 from minicode.tools.files import FileReadError, _resolve_file_path
 
 
+_VERIFICATION_LABELS = {
+    "passed": "通过", "failed": "未通过", "denied": "用户拒绝",
+    "timed_out": "检查超时", "error": "执行错误", "unknown": "结果未确认", "interrupted": "用户中断",
+}
+
+
 @dataclass(frozen=True)
 class Verification:
     """一次固定检查的实际快照；failed 表示非零退出，不推断一定是断言失败。"""
@@ -92,6 +98,7 @@ def run_repair(
     max_context_bytes: int = MAX_CONTEXT_BYTES,
     edit_confirm: Callable[[EditPreview], bool] | None = None,
     command_confirm: Callable[[CommandRequest], bool] | None = None,
+    on_progress: Callable[[str], None] | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> RepairResult:
     """先运行固定检查，再执行至多指定轮数的模型修复及复查，返回程序验证结论。
@@ -99,6 +106,7 @@ def run_repair(
     输入：prompt 是任务；session/config/project_root 沿用普通 Agent；editable_paths 是
         允许编辑的项目内源码路径元组，test_argv/cwd/timeout 固定本次检查；max_repair_attempts
         默认 3 轮，其他 max_* 限制每轮模型与工具资源。确认由调用方提供，缺失默认拒绝。
+        on_progress 可接收阶段和验证状态文字，仅用于界面展示，不参与授权。
     输出：RepairResult；passed 只证明指定命令退出码为零，不保证测试充分或业务完全正确。
     副作用：确认后执行命令和写文件；模型不开放命令工具；最终把完整交接保存为一轮，
         不删除旧历史、不回滚文件。工作会话在请求时可临时省略旧历史以满足字节预算。
@@ -176,12 +184,17 @@ def run_repair(
         if request != fixed:
             raise CommandError("固定测试的目录或参数发生变化，已停止。")
         approved = command_confirm is not None and command_confirm(request) is True
+        if approved and on_progress is not None:
+            on_progress("已批准固定检查，正在启动执行……")
         return approved
 
     def verify() -> Verification:
         """执行一次固定检查并记录有界输出；返回真实结果，失败不自动重试，中断交外层保存。"""
         nonlocal checking, approved, check_execution, pending_check
         checking, approved, check_execution, pending_check = True, False, None, None
+        if on_progress is not None:
+            stage = "基线检查" if not checks else f"第 {attempts} 轮修复后的复查"
+            on_progress(f"准备运行{stage}，等待本次命令确认……")
         try:
             check_execution = run_command(
                 fixed.project_root,
@@ -200,6 +213,8 @@ def run_repair(
         pending_check = check
         save_check(check)
         checking = approved = False
+        if on_progress is not None:
+            on_progress(f"固定检查 {len(checks) - 1}：{_VERIFICATION_LABELS[check.outcome]}，退出码：{check.returncode}。")
         return check
 
     def collect_round(result: AgentResult) -> None:
@@ -232,7 +247,7 @@ def run_repair(
         if uncertain:
             lines.append("写入结果未确认：" + json.dumps(uncertain, ensure_ascii=False))
         for index, check in enumerate(checks):
-            lines.append(f"检查 {index}：{check.outcome}，退出码：{check.returncode}。{check.detail}")
+            lines.append(f"检查 {index}：{_VERIFICATION_LABELS[check.outcome]}，退出码：{check.returncode}。{check.detail}")
         if checks:
             last = checks[-1]
             lines.extend(["最后一次检查的标准输出：", last.stdout, "最后一次检查的标准错误：", last.stderr])
@@ -259,6 +274,8 @@ def run_repair(
             if not fixed.project_root.is_dir():
                 return finish("stopped", "固定项目目录已不存在，不能开始修复；检查命令可能已经改变项目状态。")
             attempts += 1
+            if on_progress is not None:
+                on_progress(f"开始第 {attempts}/{max_repair_attempts} 轮修复。")
             result = run_agent(
                 f"有限修复第 {attempts}/{max_repair_attempts} 轮。用户目标：{prompt}\n"
                 "根据最近的固定验证结果修复允许的源码；只读、搜索和编辑，不执行命令。"
@@ -271,6 +288,7 @@ def run_repair(
                 max_context_bytes=max_context_bytes,
                 edit_confirm=edit_confirm,
                 repair_paths=frozenset(allowed),
+                on_progress=on_progress,
                 transport=transport,
             )
             collect_round(result)
@@ -282,7 +300,13 @@ def run_repair(
             return finish("passed", "最后一次固定测试正常退出，退出码为 0；仅表示该命令通过，不保证测试充分。")
         if check.outcome == "failed":
             return finish("stopped", "达到修复轮数上限，固定检查仍非零退出，未通过。")
-        return finish("stopped", "固定检查被拒绝、超时、执行异常或结果未确认；不再自动修复。")
+        reasons = {
+            "denied": "用户拒绝固定检查，命令未执行；不再自动修复。",
+            "timed_out": "固定检查超时，已尝试终止进程组；不再自动修复。",
+            "error": "固定检查执行错误；请检查可执行程序、目录和依赖，不再自动修复。",
+            "unknown": "固定检查结果未确认，可能已产生影响；请检查项目状态，不再自动修复。",
+        }
+        return finish("stopped", reasons.get(check.outcome, "固定检查中断；不再自动修复。"))
     except KeyboardInterrupt as error:
         if isinstance(error, AgentInterrupted):
             collect_round(error.result)

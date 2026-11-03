@@ -1,4 +1,4 @@
-"""读取当前工作目录的 .env；已有环境变量优先。"""
+"""读取项目默认或显式指定的配置文件；已有环境变量优先。"""
 
 from dataclasses import dataclass, field
 import math
@@ -23,18 +23,28 @@ class Config:
     timeout: float = 60.0
 
 
-def load_config() -> Config:
+def load_config(
+    *,
+    project_root: str | Path | None = None,
+    env_file: str | Path | None = None,
+) -> Config:
     """读取、校验模型配置，返回可供模型客户端使用的 Config。
 
-    输入：无显式参数；读取当前目录 .env 和进程环境变量，环境变量优先。
+    输入：project_root 指定默认 .env 所在目录，缺省为当前目录；env_file 显式指定文件时
+        不再读取默认文件，相对路径相对于当前目录。已有环境变量仍优先，不修改进程环境。
     输出：包含密钥、模型、HTTPS 基础地址和超时秒数的 Config 对象。
     异常：读取失败、缺少密钥或配置格式错误时抛出 ConfigError。
     不会修改环境变量，也不会发送网络请求或输出密钥。
     """
     try:
-        file_values = dotenv_values(Path.cwd() / ".env", interpolate=False)
+        path = Path(env_file) if env_file is not None else Path(project_root or Path.cwd()) / ".env"
+        if env_file is not None and not path.is_file():
+            raise ConfigError("指定的配置文件不存在或不是普通文件。")
+        if path.exists() and not path.is_file():
+            raise ConfigError("配置路径不是普通文件。")
+        file_values = dotenv_values(path, interpolate=False)
     except (OSError, UnicodeError):
-        raise ConfigError("无法读取当前目录的 .env，请检查文件权限和 UTF-8 编码。") from None
+        raise ConfigError("无法读取配置文件，请检查文件权限和 UTF-8 编码。") from None
 
     def value(
         name: str,
@@ -50,7 +60,7 @@ def load_config() -> Config:
 
     api_key = value("DEEPSEEK_API_KEY")
     if not api_key:
-        raise ConfigError("缺少 DEEPSEEK_API_KEY，请在当前目录的 .env 或环境变量中填写。")
+        raise ConfigError("缺少 DEEPSEEK_API_KEY，请在所选配置文件或环境变量中填写。")
     # 密钥会进入 HTTP 请求头，禁止换行和非 ASCII 字符。
     if not api_key.isascii() or any(char.isspace() for char in api_key):
         raise ConfigError("DEEPSEEK_API_KEY 格式不正确，请检查空白和非 ASCII 字符。")

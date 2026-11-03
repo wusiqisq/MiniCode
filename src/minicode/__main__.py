@@ -1,7 +1,7 @@
 """支持通过 python -m minicode 启动。"""
 
-from minicode.cli import main
+from minicode.cli import entrypoint
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(entrypoint())

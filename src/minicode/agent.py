@@ -95,6 +95,7 @@ def run_agent(
     edit_confirm: Callable[[EditPreview], bool] | None = None,
     command_confirm: Callable[[CommandRequest], bool] | None = None,
     repair_paths: frozenset[Path] | None = None,
+    on_progress: Callable[[str], None] | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> AgentResult:
     """执行一轮模型与工具循环，按影响程度保存成功或停止交接。
@@ -102,6 +103,7 @@ def run_agent(
     输入：prompt/session/config/project_root 是问题、会话、配置和项目目录；
         四个 max_* 参数控制次数和请求字节；edit_confirm/command_confirm 由应用提供；
         repair_paths 可限制为有限修复模式：仅编辑指定真实绝对路径，不开放命令；
+        on_progress 接收程序生成的进度文字，只用于展示，不授予权限；
         transport 可替换 HTTP 传输，供离线测试使用。
     输出：AgentResult，含写入路径、命令交接和保存状态；无确认接口时拒绝对应工具。
     副作用：发送模型请求、读取、获准写入或执行命令；成功保存整轮并提交历史裁剪。
@@ -150,6 +152,8 @@ def run_agent(
         allowed = edit_confirm is not None and edit_confirm(preview) is True
         if allowed:
             approved_path = preview.relative_path
+            if on_progress is not None:
+                on_progress("已批准编辑，正在准备写入……")
         return allowed
 
     def request_command_confirmation(request: CommandRequest) -> bool:
@@ -158,6 +162,8 @@ def run_agent(
         allowed = command_confirm is not None and command_confirm(request) is True
         if allowed:
             approved_command = request
+            if on_progress is not None:
+                on_progress("已批准命令，正在启动执行……")
         return allowed
 
     def stopped(reason: str) -> AgentResult:
@@ -209,6 +215,8 @@ def run_agent(
                 return stopped(str(error))
             history = history[dropped:]
             omitted += dropped
+            if on_progress is not None:
+                on_progress(f"正在调用模型（本轮第 {model_calls + 1}/{max_model_calls} 次）……")
             model_calls += 1
             try:
                 options = {} if repair_paths is None else {
@@ -249,6 +257,8 @@ def run_agent(
                 approved_command = None
                 result = None
                 tool_calls += 1
+                if on_progress is not None:
+                    on_progress(f"准备处理工具 {call.name}（本轮第 {tool_calls}/{max_tool_calls} 次）……")
                 if repair_paths is not None and call.name == "run_command":
                     # 即便模型请求了没有提供的工具，也不能只依赖工具说明来阻止执行。
                     result = ToolResult(call.id, "error", "修复模式由程序执行固定测试，不开放命令工具。")

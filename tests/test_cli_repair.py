@@ -80,7 +80,7 @@ def test_cli_repair_pass_and_followup_history(
     shown = capsys.readouterr().out
     assert shown.count("命令参数：") == 2
     assert "修复轮数：1/3" in shown and "指定检查通过。" in shown
-    assert "检查 0：failed，退出码：1" in shown and "检查 1：passed，退出码：0" in shown
+    assert "检查 0：未通过，退出码：1" in shown and "检查 1：通过，退出码：0" in shown
     assert "Ran 3 tests" in shown and "+    return a + b" in shown
     assert "固定验证结果" in str(requests[2]["messages"])
     assert "指定检查通过" in str(requests[2]["messages"])
@@ -101,7 +101,7 @@ def test_cli_repair_baseline_denied(
     session, requests = install(monkeypatch, repair_inputs() + [answer, "/exit"])
     main()
     shown = capsys.readouterr().out
-    assert "检查 0：denied" in shown and "任务未完成" in shown
+    assert "检查 0：用户拒绝" in shown and "任务未完成" in shown
     assert not requests and len(session.history_turns()) == 1
     assert "return a - b" in (repair_project / "calculator.py").read_text()
 
@@ -148,7 +148,7 @@ def test_cli_repair_interrupt_after_edit_reports_unverified_file(
     main()
     shown = capsys.readouterr().out
     assert "已中断，程序退出" in shown and "任务未完成" in shown
-    assert '已确认写入：["calculator.py"]' in shown and "检查 1：interrupted" in shown
+    assert '已确认写入：["calculator.py"]' in shown and "检查 1：用户中断" in shown
     assert len(requests) == 2 and len(session.history_turns()) == 1
     assert_closed(session.messages_for("下一问"))
     assert "return a + b" in (repair_project / "calculator.py").read_text()

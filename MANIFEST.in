@@ -1,0 +1,10 @@
+include README.md CHANGELOG.md
+recursive-include docs *.md
+recursive-include examples/repair_demo *.py *.md
+recursive-include tests *.py
+global-exclude *.py[cod] .env .env.* *.key *.pem *.p12 *.pfx
+prune .venv
+prune venv
+prune .git
+# 只在最后加入根目录的无密钥模板，其他 .env 变体保持排除。
+include .env.example
