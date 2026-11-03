@@ -3,6 +3,13 @@
 import json
 from pathlib import Path
 
+# 加载后，input() 才能在交互终端中编辑当前行、回调本进程的输入历史。
+# 不读取或写入历史文件；缺少此可选标准库模块的平台仍能使用基本输入。
+try:
+    import readline  # noqa: F401
+except ImportError:
+    pass
+
 from minicode.agent import AgentInterrupted, run_agent
 from minicode.config import ConfigError, load_config
 from minicode.session import Session
