@@ -40,12 +40,14 @@ def request_model(
     config: Config,
     *,
     use_tools: bool = False,
+    allowed_tools: frozenset[str] | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> ModelReply:
     """发送一次同步模型请求，将响应转换成内部 ModelReply。
 
     输入：messages 是完整消息列表；config 提供模型、接口、密钥和超时；
-        use_tools 控制是否附带工具说明；transport 用于替换默认 HTTP 传输。
+        use_tools 控制是否附带工具说明；allowed_tools 可收窄工具名单，不授予执行权限；
+        transport 用于替换默认 HTTP 传输。
     输出：ModelReply，包含最终文本或有序的结构化工具请求。
     异常：客户端、网络、HTTP 服务及模型协议错误转成不含密钥的 ModelError。
     只调用一次，不重试、不执行工具、不保存历史、不自动裁剪上下文。
@@ -59,7 +61,10 @@ def request_model(
         "max_tokens": 1024,
     }
     if use_tools:
-        payload["tools"] = tool_definitions()
+        payload["tools"] = [
+            tool for tool in tool_definitions()
+            if allowed_tools is None or tool["function"]["name"] in allowed_tools
+        ]
         payload["tool_choice"] = "auto"
     try:
         client = httpx.Client(timeout=config.timeout, transport=transport)

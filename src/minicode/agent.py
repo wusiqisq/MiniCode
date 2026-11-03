@@ -13,7 +13,7 @@ from minicode.context import MAX_CONTEXT_BYTES, ContextLimitError, select_contex
 from minicode.llm import ModelError, request_model
 from minicode.session import Session
 from minicode.tools.command import CommandRecord, CommandRequest
-from minicode.tools.edit import EditPreview
+from minicode.tools.edit import EditPreview, EditPreviewError
 from minicode.tools.registry import ToolResult, dispatch_tool
 
 
@@ -94,16 +94,19 @@ def run_agent(
     max_context_bytes: int = MAX_CONTEXT_BYTES,
     edit_confirm: Callable[[EditPreview], bool] | None = None,
     command_confirm: Callable[[CommandRequest], bool] | None = None,
+    repair_paths: frozenset[Path] | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> AgentResult:
     """执行一轮模型与工具循环，按影响程度保存成功或停止交接。
 
     输入：prompt/session/config/project_root 是问题、会话、配置和项目目录；
         四个 max_* 参数控制次数和请求字节；edit_confirm/command_confirm 由应用提供；
+        repair_paths 可限制为有限修复模式：仅编辑指定真实绝对路径，不开放命令；
         transport 可替换 HTTP 传输，供离线测试使用。
     输出：AgentResult，含写入路径、命令交接和保存状态；无确认接口时拒绝对应工具。
     副作用：发送模型请求、读取、获准写入或执行命令；成功保存整轮并提交历史裁剪。
     有写入、命令执行、批准后不确定或拒绝的停止也保存完整交接，但不裁剪旧历史或撤销文件修改。
+    修复模式的停止均保留工作会话交接，供外层修复控制器统一归档。
     异常：参数错误直接抛出；无副作用影响的中断向外传播，有影响则抛 AgentInterrupted。
     调用方须先告知数据流向。所有历史仅在内存，退出/崩溃后不恢复。
     """
@@ -113,6 +116,19 @@ def run_agent(
     root = Path(project_root).resolve(strict=True)
     if not root.is_dir():
         raise ValueError("项目根目录必须是已存在的目录。")
+    if repair_paths is not None and (
+        not isinstance(repair_paths, frozenset) or not repair_paths
+        or any(not isinstance(path, Path) or not path.is_absolute() or not path.is_relative_to(root)
+               for path in repair_paths)
+    ):
+        raise ValueError("修复路径必须是项目内真实绝对路径的非空 frozenset。")
+    system_prompt = SYSTEM_PROMPT
+    if repair_paths is not None:
+        system_prompt += (
+            "当前为有限修复模式：只读取、搜索和编辑允许的源码，不能执行命令。"
+            "测试由程序在本轮结束后执行；不得修改检查脚本或声称测试已通过。"
+            "允许编辑的路径：" + json.dumps([str(p.relative_to(root)) for p in sorted(repair_paths)], ensure_ascii=False)
+        )
     history = session.history_turns()
     messages = [{"role": "user", "content": prompt}]
     omitted = model_calls = tool_calls = consecutive_failures = 0
@@ -129,6 +145,8 @@ def run_agent(
     def request_confirmation(preview: EditPreview) -> bool:
         """输入待确认快照，调用应用确认并记录批准路径；返回严格 bool，不授予未来请求权限。"""
         nonlocal approved_path
+        if repair_paths is not None and preview.target_path not in repair_paths:
+            raise EditPreviewError("修复模式拒绝编辑允许名单以外的文件。")
         allowed = edit_confirm is not None and edit_confirm(preview) is True
         if allowed:
             approved_path = preview.relative_path
@@ -145,7 +163,7 @@ def run_agent(
     def stopped(reason: str) -> AgentResult:
         """输入停止原因，返回任务结果；必要时补齐工具消息并保存本地停止交接，不执行回滚。"""
         nonlocal saved
-        keep = bool(written or uncertain or commands or denied)
+        keep = bool(written or uncertain or commands or denied or repair_paths is not None)
         message = f"任务未完成：{reason}"
         if written:
             message += f" 已确认写入：{json.dumps(written, ensure_ascii=True)}；修改不会自动回滚。"
@@ -181,7 +199,7 @@ def run_agent(
         while model_calls < max_model_calls:
             try:
                 request_messages, dropped = select_context(
-                    SYSTEM_PROMPT,
+                    system_prompt,
                     history,
                     messages,
                     max_context_bytes,
@@ -193,11 +211,15 @@ def run_agent(
             omitted += dropped
             model_calls += 1
             try:
+                options = {} if repair_paths is None else {
+                    "allowed_tools": frozenset({"read_file", "search_project", "edit_file"}),
+                }
                 reply = request_model(
                     request_messages,
                     config,
                     use_tools=True,
                     transport=transport,
+                    **options,
                 )
             except ModelError as error:
                 return stopped(str(error))
@@ -227,14 +249,18 @@ def run_agent(
                 approved_command = None
                 result = None
                 tool_calls += 1
-                result = dispatch_tool(
-                    root,
-                    call.id,
-                    call.name,
-                    call.arguments,
-                    edit_confirm=request_confirmation if edit_confirm is not None else None,
-                    command_confirm=request_command_confirmation if command_confirm is not None else None,
-                )
+                if repair_paths is not None and call.name == "run_command":
+                    # 即便模型请求了没有提供的工具，也不能只依赖工具说明来阻止执行。
+                    result = ToolResult(call.id, "error", "修复模式由程序执行固定测试，不开放命令工具。")
+                else:
+                    result = dispatch_tool(
+                        root,
+                        call.id,
+                        call.name,
+                        call.arguments,
+                        edit_confirm=request_confirmation if edit_confirm is not None else None,
+                        command_confirm=request_command_confirmation if command_confirm is not None else None,
+                    )
                 if result.changed_path is not None and result.changed_path not in written:
                     written.append(result.changed_path)
                 if result.command_record is not None:
@@ -280,6 +306,6 @@ def run_agent(
             ).as_message()
             if not any(m.get("tool_call_id") == active_call.id for m in messages[-1:]):
                 messages.append(message)
-        if written or uncertain or commands or denied:
+        if written or uncertain or commands or denied or repair_paths is not None:
             raise AgentInterrupted(stopped("用户中断。")) from None
         raise

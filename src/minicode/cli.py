@@ -14,6 +14,26 @@ from minicode.agent import AgentInterrupted, run_agent
 from minicode.config import ConfigError, load_config
 from minicode.session import Session
 from minicode.permissions import confirm_command, confirm_edit, _display_text
+from minicode.repair import RepairInterrupted, run_repair
+
+
+def _repair_input() -> tuple[str, tuple[str, ...], list[str]]:
+    """读取修复目标及两组 JSON 参数，返回目标、允许文件和命令；格式错误抛 ValueError，不执行操作。"""
+    print('有限修复最多 3 轮；每次测试超时 30 秒，工作目录为项目根目录。')
+    print('只把源码加入允许编辑名单，不包含测试脚本；例如 ["calculator.py"]。')
+    goal = input("修复目标 > ").strip()
+    try:
+        paths = json.loads(input("允许编辑的文件（JSON 字符串列表） > "))
+        argv = json.loads(input("测试命令（JSON 参数列表） > "))
+    except (ValueError, RecursionError):
+        raise ValueError("文件和命令必须是 JSON 字符串列表，例如 [\"calculator.py\"]。") from None
+    if not goal or any(
+        not isinstance(values, list) or not values
+        or any(not isinstance(item, str) or not item.strip() for item in values)
+        for values in (paths, argv)
+    ):
+        raise ValueError("目标不能为空，文件和命令必须是非空 JSON 字符串列表。")
+    return goal, tuple(paths), argv
 
 
 def main() -> None:
@@ -21,11 +41,12 @@ def main() -> None:
 
     输入：无函数参数；从标准输入读取问题，使用启动目录作为项目根目录。
     输出：无返回值；向终端展示数据提示、模型结果、限制和错误信息。
-    副作用：加载配置并调用模型，编辑和命令须逐次确认；/clear 只清历史、不撤销副作用。
+    副作用：加载配置并调用模型，编辑和命令须逐次确认；/repair 使用固定测试与有限轮数；
+        /clear 只清历史、不撤销副作用。
     退出命令、EOF 或 Ctrl+C 结束程序；配置错误展示后允许继续输入。
     """
     print("欢迎使用 MiniCode。")
-    print("输入 /exit 退出，/clear 清空对话历史。")
+    print("输入 /exit 退出，/clear 清空对话历史，/repair 启动固定测试与有限修复。")
     project_root = Path.cwd().resolve()
     print(f"项目根目录：{project_root}")
     print("当前问题、保留的对话与程序交接、工具请求和读取的文件内容（包括搜索片段）将发送到配置的模型服务。")
@@ -50,6 +71,24 @@ def main() -> None:
             if user_input == "/clear":
                 session.clear()
                 print("MiniCode > 已清空对话历史。")
+                continue
+            if user_input == "/repair":
+                try:
+                    goal, paths, argv = _repair_input()
+                    repair_result = run_repair(
+                        goal,
+                        session,
+                        load_config(),
+                        project_root,
+                        editable_paths=paths,
+                        test_argv=argv,
+                        edit_confirm=confirm_edit,
+                        command_confirm=confirm_command,
+                    )
+                except ValueError as error:
+                    print(f"MiniCode > 修复输入或配置无效：{_display_text(str(error))}")
+                    continue
+                print(f"MiniCode > {_display_text(repair_result.message)}")
                 continue
 
             config = load_config()
@@ -78,6 +117,10 @@ def main() -> None:
             return
         except AgentInterrupted as error:
             print(f"MiniCode > {error.result.message}")
+            print("\n已中断，程序退出。")
+            return
+        except RepairInterrupted as error:
+            print(f"MiniCode > {_display_text(error.result.message)}")
             print("\n已中断，程序退出。")
             return
         except KeyboardInterrupt:
